@@ -12,6 +12,7 @@ local default_config = {
     width = 0.65,
     height = 0.75,
     border = "rounded",
+    content_margin = 2,
   },
   api = {
     base_url = vim.env.JIRA_BASE_URL or "",
