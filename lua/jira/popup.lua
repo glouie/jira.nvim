@@ -4,7 +4,7 @@ local Popup = {}
 
 local popup_ns = vim.api.nvim_create_namespace("jira.nvim.popup")
 local popup_highlights_ready = false
-local nav_hint = "Nav: j/k scroll • gg top • G bottom • Tab/S-Tab switch panes • / search • q/Esc close • o open URL"
+local nav_hint = "Nav: j/k scroll • gg top • G bottom • Tab/S-Tab switch panes • / search • <S-N>/<S-P> next/prev • q/Esc close • o open URL"
 local user_highlight_cache = {}
 local user_highlight_counter = 0
 local user_palette = {
@@ -115,6 +115,10 @@ local function ensure_popup_highlights()
     default = true,
     fg = "#ffffff",
     bg = "#4b3a6b",
+    bold = true,
+  })
+  vim.api.nvim_set_hl(0, "JiraPopupTitleBar", {
+    default = true,
     bold = true,
   })
   vim.api.nvim_set_hl(0, "JiraPopupUserInactive", {
@@ -380,6 +384,7 @@ local state = {
   allowed_wins = {},
   focus_autocmd = nil,
   last_focus = nil,
+  navigation = nil,
 }
 
 local function valid_win(win)
@@ -581,6 +586,7 @@ function Popup.close()
     allowed_wins = {},
     focus_autocmd = nil,
     last_focus = nil,
+    navigation = nil,
   }
 end
 
@@ -1009,6 +1015,21 @@ local function url_bar_lines(issue, config, width)
   return lines, highlights
 end
 
+local function format_popup_title(issue_key, nav)
+  local suffix = ""
+  if nav and nav.index and nav.total then
+    suffix = string.format(" (%d/%d)", nav.index, nav.total)
+  end
+  local title = string.format(" JIRA %s%s ", issue_key, suffix)
+  if nav and nav.has_prev then
+    title = "< " .. title
+  end
+  if nav and nav.has_next then
+    title = title .. " >"
+  end
+  return title
+end
+
 local function fill_buffer(buf, lines, opts)
   opts = opts or {}
   vim.bo[buf].modifiable = true
@@ -1042,7 +1063,7 @@ local function fill_buffer(buf, lines, opts)
   end
 end
 
-local function map_popup_keys(buf, issue, config)
+local function map_popup_keys(buf, issue, config, nav_controls)
   local opts = { buffer = buf, nowait = true, silent = true }
   local function close_popup()
     Popup.close()
@@ -1070,16 +1091,34 @@ local function map_popup_keys(buf, issue, config)
   vim.keymap.set("n", "/", search_popup, opts)
   vim.keymap.set("n", "<Tab>", focus_next, opts)
   vim.keymap.set("n", "<S-Tab>", focus_prev, opts)
+  if nav_controls and nav_controls.next_issue then
+    vim.keymap.set("n", "<S-N>", nav_controls.next_issue, opts)
+  end
+  if nav_controls and nav_controls.prev_issue then
+    vim.keymap.set("n", "<S-P>", nav_controls.prev_issue, opts)
+  end
   for _, seq in ipairs({ "<C-w><Left>", "<C-w><Right>", "<C-w><Up>", "<C-w><Down>", "<C-w><", "<C-w>>", "<C-w>+", "<C-w>-", "<C-w>|", "<C-w>_" }) do
     vim.keymap.set("n", seq, function() end, opts)
   end
 end
 
-function Popup.render(issue, config)
+function Popup.render(issue, config, context)
   Popup.close()
 
   config = config or {}
   config.popup = config.popup or {}
+  context = context or {}
+  ensure_popup_highlights()
+
+  local nav_context = context.navigation
+  state.navigation = nav_context
+  local nav_controls = nil
+  if nav_context then
+    nav_controls = {
+      next_issue = nav_context.goto_next,
+      prev_issue = nav_context.goto_prev,
+    }
+  end
 
   local dims = calculate_dimensions(config)
   local pane_gap = 2
@@ -1141,11 +1180,12 @@ function Popup.render(issue, config)
     row = dims.row,
     style = "minimal",
     border = "double",
-    title = string.format(" JIRA %s ", issue.key),
+    title = format_popup_title(issue.key, nav_context),
     title_pos = "center",
     zindex = 50,
     focusable = false,
   })
+  vim.api.nvim_win_set_option(container_win, "winhl", "FloatTitle:JiraPopupTitleBar")
 
   local summary_buf = vim.api.nvim_create_buf(false, true)
   local main_buf = vim.api.nvim_create_buf(false, true)
@@ -1265,9 +1305,9 @@ function Popup.render(issue, config)
   apply_statusline(main_win, status_name)
   apply_statusline(sidebar_win, status_name)
 
-  map_popup_keys(main_buf, issue, config)
-  map_popup_keys(sidebar_buf, issue, config)
-  map_popup_keys(url_buf, issue, config)
+  map_popup_keys(main_buf, issue, config, nav_controls)
+  map_popup_keys(sidebar_buf, issue, config, nav_controls)
+  map_popup_keys(url_buf, issue, config, nav_controls)
 
   state.container_win = container_win
   state.main_win = main_win

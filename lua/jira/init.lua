@@ -24,6 +24,128 @@ local default_config = {
 local config = vim.deepcopy(default_config)
 local ns = vim.api.nvim_create_namespace("jira.nvim")
 local group = vim.api.nvim_create_augroup("jira.nvim", { clear = true })
+local navigation_state
+local move_navigation
+
+local function collect_buffer_issues(bufnr)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return {}
+  end
+  local pattern = config.issue_pattern or default_config.issue_pattern
+  if not pattern or pattern == "" then
+    return {}
+  end
+  local issues = {}
+  local seen = {}
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  for _, line in ipairs(lines) do
+    local start = 1
+    while true do
+      local s, e = line:find(pattern, start)
+      if not s then
+        break
+      end
+      local key = line:sub(s, e)
+      if key ~= "" and not seen[key] then
+        seen[key] = true
+        table.insert(issues, { key = key })
+      end
+      start = e + 1
+    end
+  end
+  return issues
+end
+
+local function issue_index(issues, issue_key)
+  if not issues or not issue_key or issue_key == "" then
+    return nil
+  end
+  for idx, item in ipairs(issues) do
+    if item.key == issue_key then
+      return idx
+    end
+  end
+  return nil
+end
+
+local function update_navigation_from_buffer(bufnr, issue_key)
+  local issues = collect_buffer_issues(bufnr)
+  if issue_key and issue_key ~= "" then
+    local idx = issue_index(issues, issue_key)
+    if not idx then
+      table.insert(issues, { key = issue_key })
+      idx = #issues
+    end
+    navigation_state = {
+      bufnr = bufnr,
+      issues = issues,
+      index = idx,
+    }
+  elseif #issues > 0 then
+    navigation_state = {
+      bufnr = bufnr,
+      issues = issues,
+      index = 1,
+    }
+  else
+    navigation_state = nil
+  end
+  return navigation_state
+end
+
+local function navigation_payload()
+  local nav = navigation_state
+  if not nav or not nav.issues or not nav.index then
+    return nil
+  end
+  local total = #nav.issues
+  if total == 0 then
+    return nil
+  end
+  if nav.index < 1 then
+    nav.index = 1
+  elseif nav.index > total then
+    nav.index = total
+  end
+  local payload = {
+    total = total,
+    index = nav.index,
+  }
+  if nav.index > 1 then
+    payload.has_prev = true
+    payload.goto_prev = function()
+      move_navigation(-1)
+    end
+  end
+  if nav.index < total then
+    payload.has_next = true
+    payload.goto_next = function()
+      move_navigation(1)
+    end
+  end
+  return payload
+end
+
+move_navigation = function(delta)
+  local nav = navigation_state
+  if not nav or not nav.issues then
+    return
+  end
+  local total = #nav.issues
+  if total == 0 then
+    return
+  end
+  local target = (nav.index or 1) + delta
+  if target < 1 or target > total then
+    return
+  end
+  nav.index = target
+  local entry = nav.issues[target]
+  if not entry or not entry.key or entry.key == "" then
+    return
+  end
+  M.open_issue(entry.key, { navigation = nav })
+end
 
 local function ensure_highlight()
   local ok = pcall(vim.api.nvim_get_hl, 0, { name = config.highlight_group })
@@ -117,10 +239,16 @@ function M.find_issue_under_cursor()
   return scan_line(line, cursor[2])
 end
 
-function M.open_issue(issue_key)
+function M.open_issue(issue_key, opts)
   if not issue_key or issue_key == "" then
     vim.notify("jira.nvim: missing issue key", vim.log.levels.WARN)
     return
+  end
+  opts = opts or {}
+  if opts.navigation ~= nil then
+    navigation_state = opts.navigation
+  else
+    navigation_state = nil
   end
   api.fetch_issue(issue_key, config, function(issue, err)
     vim.schedule(function()
@@ -128,7 +256,15 @@ function M.open_issue(issue_key)
         vim.notify(string.format("jira.nvim: %s", err), vim.log.levels.ERROR)
         return
       end
-      popup.render(issue, config)
+      local nav_context = nil
+      if navigation_state then
+        local idx = issue_index(navigation_state.issues, issue.key)
+        if idx then
+          navigation_state.index = idx
+        end
+        nav_context = navigation_payload()
+      end
+      popup.render(issue, config, { navigation = nav_context })
     end)
   end)
 end
@@ -139,7 +275,9 @@ function M.open_issue_under_cursor()
     vim.notify("jira.nvim: cursor is not on an issue key", vim.log.levels.INFO)
     return
   end
-  M.open_issue(issue)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local nav = update_navigation_from_buffer(bufnr, issue)
+  M.open_issue(issue, { navigation = nav })
 end
 
 function M.refresh(bufnr)
