@@ -1,0 +1,7 @@
+if exists("g:jira_nvim_runtime_alias")
+  finish
+endif
+let g:jira_nvim_runtime_alias = 1
+
+" Allow :runtime plugin/jira.nvim for folks following the older docs.
+runtime plugin/jira.vim

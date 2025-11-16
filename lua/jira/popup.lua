@@ -155,7 +155,7 @@ local function ensure_popup_highlights()
   vim.api.nvim_set_hl(0, "JiraPopupTitleBar", {
     default = true,
     fg = catppuccin.lavender,
-    bg = catppuccin.crust,
+    bg = "NONE",
     bold = true,
   })
   vim.api.nvim_set_hl(0, "JiraPopupUserInactive", {
@@ -367,7 +367,21 @@ local function add_buffer_highlight(buf, group, line, start_col, end_col)
   pcall(vim.api.nvim_buf_add_highlight, buf, popup_ns, group, line, start_col, end_col)
 end
 
-local function add_issue_key_highlights(buf, lines, pattern)
+local function should_ignore_issue_key(issue_key, ignored_projects)
+  if not issue_key or issue_key == "" then
+    return false
+  end
+  if not ignored_projects then
+    return false
+  end
+  local project = issue_key:match("^([%a%d]+)%-%d+$")
+  if not project then
+    return false
+  end
+  return ignored_projects[project:upper()] == true
+end
+
+local function add_issue_key_highlights(buf, lines, pattern, ignored_projects)
   pattern = pattern or "%u+-%d+"
   if not lines or pattern == "" then
     return
@@ -379,7 +393,10 @@ local function add_issue_key_highlights(buf, lines, pattern)
       if not s then
         break
       end
-      add_buffer_highlight(buf, "JiraPopupKey", idx - 1, s - 1, e)
+      local issue_key = line:sub(s, e)
+      if not should_ignore_issue_key(issue_key, ignored_projects) then
+        add_buffer_highlight(buf, "JiraPopupKey", idx - 1, s - 1, e)
+      end
       start = e + 1
     end
   end
@@ -402,7 +419,7 @@ local function add_link_highlights(buf, lines)
   end
 end
 
-local function apply_highlights(buf, lines, highlights, issue_pattern)
+local function apply_highlights(buf, lines, highlights, issue_pattern, ignored_projects)
   ensure_popup_highlights()
   vim.api.nvim_buf_clear_namespace(buf, popup_ns, 0, -1)
   if highlights then
@@ -410,7 +427,7 @@ local function apply_highlights(buf, lines, highlights, issue_pattern)
       add_buffer_highlight(buf, mark.group, mark.line, mark.start_col, mark.end_col)
     end
   end
-  add_issue_key_highlights(buf, lines, issue_pattern)
+  add_issue_key_highlights(buf, lines, issue_pattern, ignored_projects)
   add_link_highlights(buf, lines)
 end
 
@@ -1179,11 +1196,14 @@ function Popup.render(issue, config, context)
   local pane_gap = 2
   local vertical_gap = 0
   local url_bar_height = 2
-  local margin = 0
   local min_inner_width = 56
   local min_content_height = 8
   local inner_width = math.max(min_inner_width, dims.width)
   local content_height = math.max(min_content_height, dims.height - url_bar_height - vertical_gap)
+  local summary_margin_left = 1
+  local main_margin_left = 1
+  local sidebar_margin_left = 1
+  local url_margin_left = 1
 
   local sidebar_width = math.max(24, math.floor(inner_width * 0.32))
   local max_sidebar = inner_width - pane_gap - 30
@@ -1202,6 +1222,11 @@ function Popup.render(issue, config, context)
     sidebar_width = 24
     main_width = inner_width - sidebar_width - pane_gap
   end
+
+  local summary_width = math.max(1, inner_width - summary_margin_left)
+  local main_width_with_margin = math.max(1, main_width - main_margin_left)
+  local sidebar_width_with_margin = math.max(1, sidebar_width - sidebar_margin_left)
+  local url_width = math.max(1, inner_width - url_margin_left)
 
   local container_buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(container_buf, 0, -1, false, { "" })
@@ -1229,10 +1254,10 @@ function Popup.render(issue, config, context)
   local sidebar_buf = vim.api.nvim_create_buf(false, true)
   local url_buf = vim.api.nvim_create_buf(false, true)
 
-  local main_content, main_highlights = main_lines(issue, math.max(20, main_width - 2), config)
-  local sidebar_content, sidebar_highlights = sidebar_lines(issue, math.max(20, sidebar_width - 2))
-  local url_content, url_highlights = url_bar_lines(issue, config, inner_width)
-  local summary_lines, summary_highlights = summary_bar_lines(issue, inner_width)
+  local main_content, main_highlights = main_lines(issue, math.max(20, main_width_with_margin - 1), config)
+  local sidebar_content, sidebar_highlights = sidebar_lines(issue, math.max(20, sidebar_width_with_margin - 1))
+  local url_content, url_highlights = url_bar_lines(issue, config, url_width)
+  local summary_lines, summary_highlights = summary_bar_lines(issue, summary_width)
   local summary_line_count = math.min(#main_content, 2)
   local main_body_lines = {}
   local main_body_highlights = {}
@@ -1267,18 +1292,19 @@ function Popup.render(issue, config, context)
   fill_buffer(sidebar_buf, sidebar_content)
   fill_buffer(url_buf, url_content)
 
-  apply_highlights(summary_buf, summary_lines, summary_highlights, config.issue_pattern)
-  apply_highlights(main_buf, main_body_lines, main_body_highlights, config.issue_pattern)
-  apply_highlights(sidebar_buf, sidebar_content, sidebar_highlights, config.issue_pattern)
-  apply_highlights(url_buf, url_content, url_highlights, config.issue_pattern)
+  local ignored_projects = config._ignored_project_map
+  apply_highlights(summary_buf, summary_lines, summary_highlights, config.issue_pattern, ignored_projects)
+  apply_highlights(main_buf, main_body_lines, main_body_highlights, config.issue_pattern, ignored_projects)
+  apply_highlights(sidebar_buf, sidebar_content, sidebar_highlights, config.issue_pattern, ignored_projects)
+  apply_highlights(url_buf, url_content, url_highlights, config.issue_pattern, ignored_projects)
 
   local summary_win = vim.api.nvim_open_win(summary_buf, false, {
     relative = "win",
     win = container_win,
-    width = inner_width,
+    width = summary_width,
     height = summary_height,
-    col = margin,
-    row = margin,
+    col = summary_margin_left,
+    row = 0,
     style = "minimal",
     border = "none",
     zindex = 60,
@@ -1289,10 +1315,10 @@ function Popup.render(issue, config, context)
   local main_win = vim.api.nvim_open_win(main_buf, true, {
     relative = "win",
     win = container_win,
-    width = main_width,
+    width = main_width_with_margin,
     height = scrollable_height,
-    col = margin,
-    row = margin + summary_height,
+    col = main_margin_left,
+    row = summary_height,
     style = "minimal",
     border = "none",
     zindex = 60,
@@ -1301,10 +1327,10 @@ function Popup.render(issue, config, context)
   local sidebar_win = vim.api.nvim_open_win(sidebar_buf, false, {
     relative = "win",
     win = container_win,
-    width = sidebar_width,
+    width = sidebar_width_with_margin,
     height = scrollable_height,
-    col = margin + main_width + pane_gap,
-    row = margin + summary_height,
+    col = main_width + pane_gap + sidebar_margin_left,
+    row = summary_height,
     style = "minimal",
     border = "none",
     zindex = 60,
@@ -1314,10 +1340,10 @@ function Popup.render(issue, config, context)
   local url_win = vim.api.nvim_open_win(url_buf, false, {
     relative = "win",
     win = container_win,
-    width = dims.width,
+    width = url_width,
     height = url_bar_height,
-    col = 0,
-    row = margin + content_height + vertical_gap,
+    col = url_margin_left,
+    row = content_height + vertical_gap,
     style = "minimal",
     border = "none",
     zindex = 60,

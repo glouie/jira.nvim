@@ -43,6 +43,7 @@ require("jira").setup({
   keymap = "<leader>ji", -- key used to open the popup for the issue under the cursor
   issue_pattern = "%u+-%d+", -- Lua pattern for matching issue keys
   highlight_group = "JiraIssue", -- highlight used to underline matches
+  ignored_projects = { "SEV" }, -- project keys to skip when scanning for issue matches
   popup = {
     width = 0.6,
     height = 0.7,
@@ -55,6 +56,7 @@ require("jira").setup({
   },
 })
 ```
+Set `ignored_projects` to a list of project prefixes (defaults to `{ "SEV" }`) when you need to avoid false positives such as severity labels that resemble issue keys.
 
 ## Usage
 

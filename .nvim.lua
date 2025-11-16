@@ -28,13 +28,22 @@ local function load_plugin()
   if vim.g.loaded_jira_nvim then
     return
   end
-  local ok, err = pcall(vim.cmd, "runtime plugin/jira.lua")
-  if not ok then
-    vim.notify(
-      string.format("jira.nvim: failed to source plugin entry (%s)", err),
-      vim.log.levels.ERROR
-    )
+  local targets = {
+    "plugin/jira.vim",
+    "plugin/jira.lua",
+  }
+  local last_err
+  for _, target in ipairs(targets) do
+    local ok, err = pcall(vim.cmd, "runtime " .. target)
+    if ok then
+      return
+    end
+    last_err = err
   end
+  vim.notify(
+    string.format("jira.nvim: failed to source plugin entry (%s)", last_err or "unknown error"),
+    vim.log.levels.ERROR
+  )
 end
 
 if ensure_rtp(root) or not vim.g.loaded_jira_nvim then

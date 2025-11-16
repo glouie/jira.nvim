@@ -8,6 +8,7 @@ local default_config = {
   issue_pattern = "%u+-%d+",
   highlight_group = "JiraIssue",
   max_lines = -1,
+  ignored_projects = { "SEV" },
   popup = {
     width = 0.65,
     height = 0.75,
@@ -25,6 +26,32 @@ local ns = vim.api.nvim_create_namespace("jira.nvim")
 local group = vim.api.nvim_create_augroup("jira.nvim", { clear = true })
 local navigation_state
 local move_navigation
+local function rebuild_ignored_project_map()
+  local map = {}
+  for _, project in ipairs(config.ignored_projects or {}) do
+    if type(project) == "string" and project ~= "" then
+      map[project:upper()] = true
+    end
+  end
+  config._ignored_project_map = map
+end
+
+rebuild_ignored_project_map()
+
+local function should_ignore_issue_key(issue_key)
+  if not issue_key or issue_key == "" then
+    return false
+  end
+  local project = issue_key:match("^([%a%d]+)%-%d+$")
+  if not project then
+    return false
+  end
+  local map = config._ignored_project_map
+  if not map then
+    return false
+  end
+  return map[project:upper()] == true
+end
 
 local function collect_buffer_issues(bufnr)
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
@@ -45,7 +72,7 @@ local function collect_buffer_issues(bufnr)
         break
       end
       local key = line:sub(s, e)
-      if key ~= "" and not seen[key] then
+      if key ~= "" and not seen[key] and not should_ignore_issue_key(key) then
         seen[key] = true
         table.insert(issues, { key = key })
       end
@@ -162,8 +189,9 @@ local function scan_line(line, col)
     if not s then
       break
     end
-    if col and col >= (s - 1) and col <= (e - 1) then
-      return line:sub(s, e)
+    local key = line:sub(s, e)
+    if not should_ignore_issue_key(key) and col and col >= (s - 1) and col <= (e - 1) then
+      return key
     end
     start = e + 1
   end
@@ -189,7 +217,10 @@ local function highlight_buffer(bufnr)
       if not s then
         break
       end
-      vim.api.nvim_buf_add_highlight(bufnr, ns, config.highlight_group, idx - 1, s - 1, e)
+      local key = line:sub(s, e)
+      if not should_ignore_issue_key(key) then
+        vim.api.nvim_buf_add_highlight(bufnr, ns, config.highlight_group, idx - 1, s - 1, e)
+      end
       start = e + 1
     end
   end
@@ -222,6 +253,7 @@ function M.setup(opts)
   config = vim.tbl_deep_extend("force", vim.deepcopy(default_config), opts)
   config.api = vim.tbl_deep_extend("force", vim.deepcopy(default_config.api), opts.api or {})
   config.popup = vim.tbl_deep_extend("force", vim.deepcopy(default_config.popup), opts.popup or {})
+  rebuild_ignored_project_map()
   ensure_highlight()
   attach_autocmds()
   if config.keymap and config.keymap ~= "" then
