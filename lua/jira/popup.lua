@@ -7,27 +7,53 @@ local popup_highlights_ready = false
 local nav_hint = "Nav: j/k scroll • gg top • G bottom • Tab/S-Tab switch panes • / search • <S-N>/<S-P> next/prev • q/Esc close • o open URL"
 local user_highlight_cache = {}
 local user_highlight_counter = 0
+local catppuccin = {
+  base = "#1e1e2e",
+  mantle = "#181825",
+  crust = "#11111b",
+  surface0 = "#313244",
+  surface1 = "#45475a",
+  surface2 = "#585b70",
+  overlay0 = "#6c7086",
+  overlay1 = "#7f849c",
+  overlay2 = "#9399b2",
+  subtext0 = "#a6adc8",
+  subtext1 = "#bac2de",
+  text = "#cdd6f4",
+  lavender = "#b4befe",
+  blue = "#89b4fa",
+  sky = "#89dceb",
+  teal = "#94e2d5",
+  green = "#a6e3a1",
+  yellow = "#f9e2af",
+  peach = "#fab387",
+  maroon = "#eba0ac",
+  red = "#f38ba8",
+  mauve = "#cba6f7",
+  pink = "#f5c2e7",
+  rosewater = "#f5e0dc",
+}
 local user_palette = {
-  "#e06c75",
-  "#61afef",
-  "#98c379",
-  "#c678dd",
-  "#e5c07b",
-  "#56b6c2",
-  "#d55fde",
-  "#7fdbca",
+  catppuccin.blue,
+  catppuccin.teal,
+  catppuccin.green,
+  catppuccin.peach,
+  catppuccin.sky,
+  catppuccin.mauve,
+  catppuccin.pink,
+  catppuccin.yellow,
 }
 local priority_colors = {
-  "#ff4d4f",
-  "#ff7849",
-  "#ffb347",
-  "#ffd966",
+  catppuccin.red,
+  catppuccin.peach,
+  catppuccin.yellow,
+  catppuccin.green,
 }
 local severity_colors = {
-  "#ff5c57",
-  "#ff884d",
-  "#ffc857",
-  "#ffe28a",
+  catppuccin.maroon,
+  catppuccin.peach,
+  catppuccin.yellow,
+  catppuccin.sky,
 }
 local priority_rules = {
   { level = 1, keywords = { "p0", "blocker", "critical", "highest" } },
@@ -46,95 +72,111 @@ local function ensure_popup_highlights()
   if popup_highlights_ready then
     return
   end
-  vim.api.nvim_set_hl(0, "JiraPopupKey", { default = true, bold = true })
-  vim.api.nvim_set_hl(0, "JiraPopupUser", { default = true, bold = true })
+  vim.api.nvim_set_hl(0, "JiraPopupKey", {
+    default = true,
+    fg = catppuccin.peach,
+    bold = true,
+  })
+  vim.api.nvim_set_hl(0, "JiraPopupUser", {
+    default = true,
+    fg = catppuccin.green,
+    bold = true,
+  })
   vim.api.nvim_set_hl(0, "JiraPopupLink", {
     default = true,
     underline = true,
-    fg = "#61afef",
+    fg = catppuccin.sky,
   })
   vim.api.nvim_set_hl(0, "JiraPopupLabel", {
     default = true,
-    fg = "#56b6c2",
+    fg = catppuccin.teal,
     bold = true,
   })
   vim.api.nvim_set_hl(0, "JiraPopupTitle", {
     default = true,
-    fg = "#f8e3ff",
+    fg = catppuccin.rosewater,
+    bg = catppuccin.surface1,
     bold = true,
   })
   vim.api.nvim_set_hl(0, "JiraPopupSection", {
     default = true,
-    fg = "#c099ff",
+    fg = catppuccin.mauve,
     bold = true,
   })
   vim.api.nvim_set_hl(0, "JiraPopupDescription", {
     default = true,
-    fg = "#d9b3ff",
+    fg = catppuccin.subtext1,
   })
   vim.api.nvim_set_hl(0, "JiraPopupCommentHeader", {
     default = true,
-    fg = "#a6e3ff",
+    fg = catppuccin.sky,
     bold = true,
   })
   vim.api.nvim_set_hl(0, "JiraPopupCommentBody", {
     default = true,
-    fg = "#cbefff",
+    fg = catppuccin.subtext0,
   })
   vim.api.nvim_set_hl(0, "JiraPopupChangesHeader", {
     default = true,
-    fg = "#ffd6a5",
+    fg = catppuccin.peach,
     bold = true,
   })
   vim.api.nvim_set_hl(0, "JiraPopupChangesBody", {
     default = true,
-    fg = "#f1c07d",
+    fg = catppuccin.yellow,
   })
   vim.api.nvim_set_hl(0, "JiraPopupTimestamp", {
     default = true,
-    fg = "#ffd966",
+    fg = catppuccin.yellow,
     bold = true,
   })
   vim.api.nvim_set_hl(0, "JiraPopupVersion", {
     default = true,
-    fg = "#8de1ff",
+    fg = catppuccin.teal,
     bold = true,
   })
   vim.api.nvim_set_hl(0, "JiraPopupDetailsHeader", {
     default = true,
-    fg = "#9be5ff",
-    bg = "#2b2b2b",
+    fg = catppuccin.sky,
+    bg = catppuccin.surface0,
     bold = true,
   })
   vim.api.nvim_set_hl(0, "JiraPopupDetailsBody", {
     default = true,
-    fg = "#f0f0f0",
-    bg = "#2b2b2b",
+    fg = catppuccin.subtext0,
+    bg = catppuccin.surface0,
   })
   vim.api.nvim_set_hl(0, "JiraPopupStatusline", {
     default = true,
-    fg = "#ffffff",
-    bg = "#4b3a6b",
+    fg = catppuccin.text,
+    bg = catppuccin.surface2,
     bold = true,
   })
   vim.api.nvim_set_hl(0, "JiraPopupTitleBar", {
     default = true,
+    fg = catppuccin.lavender,
+    bg = catppuccin.crust,
     bold = true,
   })
   vim.api.nvim_set_hl(0, "JiraPopupUserInactive", {
     default = true,
-    fg = "#666666",
+    fg = catppuccin.overlay1,
     bold = true,
   })
   vim.api.nvim_set_hl(0, "JiraPopupUrlBar", {
     default = true,
-    fg = "#ffffff",
-    bg = "#1b1b1b",
+    fg = catppuccin.text,
+    bg = catppuccin.surface1,
     bold = true,
+  })
+  vim.api.nvim_set_hl(0, "JiraPopupSummaryBackground", {
+    default = true,
+    fg = catppuccin.text,
+    bg = catppuccin.surface1,
   })
   vim.api.nvim_set_hl(0, "JiraPopupOpenIndicator", {
     default = true,
-    fg = "#ffd966",
+    fg = catppuccin.yellow,
     bold = true,
   })
   for level, color in ipairs(priority_colors) do
@@ -995,6 +1037,19 @@ local function main_lines(issue, width, config)
   return lines, highlights
 end
 
+local function summary_bar_lines(issue, width)
+  local fields = issue.fields or {}
+  local summary_text = fields.summary or "(no summary)"
+  local title_line = string.format("%s — %s", issue.key or "Issue", summary_text)
+  local divider_width = math.max(20, math.floor(width or 0))
+  local divider_line = string.rep("=", divider_width)
+  local lines = { title_line, divider_line }
+  local highlights = {}
+  highlight_full_line(highlights, "JiraPopupTitle", 0, title_line)
+  highlight_full_line(highlights, "JiraPopupTitle", 1, divider_line)
+  return lines, highlights
+end
+
 local function url_bar_lines(issue, config, width)
   local url_value = format_issue_url(issue.key, config)
   if url_value == "" then
@@ -1122,31 +1177,13 @@ function Popup.render(issue, config, context)
 
   local dims = calculate_dimensions(config)
   local pane_gap = 2
-  local vertical_gap = 1
+  local vertical_gap = 0
   local url_bar_height = 2
-  local requested_margin = config.popup and config.popup.content_margin or 0
-  if type(requested_margin) ~= "number" then
-    requested_margin = 0
-  end
-  local margin = math.max(0, math.floor(requested_margin))
+  local margin = 0
   local min_inner_width = 56
   local min_content_height = 8
-  local max_margin_by_width = math.floor((dims.width - min_inner_width) / 2)
-  if max_margin_by_width < 0 then
-    max_margin_by_width = 0
-  end
-  local max_margin_by_height = dims.height - (vertical_gap + url_bar_height + min_content_height)
-  if max_margin_by_height < 0 then
-    max_margin_by_height = 0
-  end
-  if margin > max_margin_by_width then
-    margin = max_margin_by_width
-  end
-  if margin > max_margin_by_height then
-    margin = max_margin_by_height
-  end
-  local inner_width = math.max(min_inner_width, dims.width - (margin * 2))
-  local content_height = math.max(min_content_height, dims.height - margin - url_bar_height - vertical_gap)
+  local inner_width = math.max(min_inner_width, dims.width)
+  local content_height = math.max(min_content_height, dims.height - url_bar_height - vertical_gap)
 
   local sidebar_width = math.max(24, math.floor(inner_width * 0.32))
   local max_sidebar = inner_width - pane_gap - 30
@@ -1195,27 +1232,17 @@ function Popup.render(issue, config, context)
   local main_content, main_highlights = main_lines(issue, math.max(20, main_width - 2), config)
   local sidebar_content, sidebar_highlights = sidebar_lines(issue, math.max(20, sidebar_width - 2))
   local url_content, url_highlights = url_bar_lines(issue, config, inner_width)
-  local summary_lines = {}
-  local summary_highlights = {}
+  local summary_lines, summary_highlights = summary_bar_lines(issue, inner_width)
+  local summary_line_count = math.min(#main_content, 2)
   local main_body_lines = {}
   local main_body_highlights = {}
-  local summary_line_count = math.min(#main_content, 3)
   for idx, line in ipairs(main_content) do
-    if idx <= summary_line_count then
-      table.insert(summary_lines, line)
-    else
+    if idx > summary_line_count then
       table.insert(main_body_lines, line)
     end
   end
   for _, mark in ipairs(main_highlights) do
-    if mark.line <= (summary_line_count - 1) then
-      table.insert(summary_highlights, {
-        group = mark.group,
-        line = mark.line,
-        start_col = mark.start_col,
-        end_col = mark.end_col,
-      })
-    else
+    if mark.line >= summary_line_count then
       table.insert(main_body_highlights, {
         group = mark.group,
         line = mark.line - summary_line_count,
@@ -1224,13 +1251,14 @@ function Popup.render(issue, config, context)
       })
     end
   end
-  local summary_height = math.max(1, #summary_lines)
-  if summary_height > content_height - 4 then
-    summary_height = math.max(1, content_height - 4)
+  if not summary_lines or #summary_lines == 0 then
+    summary_lines = { "" }
+    summary_highlights = {}
   end
+  local summary_height = #summary_lines
   local scrollable_height = content_height - summary_height
   if scrollable_height < 4 then
-    scrollable_height = 4
+    scrollable_height = math.max(4, content_height - 1)
     summary_height = math.max(1, content_height - scrollable_height)
   end
 
@@ -1247,7 +1275,7 @@ function Popup.render(issue, config, context)
   local summary_win = vim.api.nvim_open_win(summary_buf, false, {
     relative = "win",
     win = container_win,
-    width = main_width,
+    width = inner_width,
     height = summary_height,
     col = margin,
     row = margin,
@@ -1256,6 +1284,7 @@ function Popup.render(issue, config, context)
     zindex = 60,
     focusable = false,
   })
+  vim.api.nvim_win_set_option(summary_win, "winhl", "Normal:JiraPopupSummaryBackground,NormalNC:JiraPopupSummaryBackground")
 
   local main_win = vim.api.nvim_open_win(main_buf, true, {
     relative = "win",
@@ -1285,9 +1314,9 @@ function Popup.render(issue, config, context)
   local url_win = vim.api.nvim_open_win(url_buf, false, {
     relative = "win",
     win = container_win,
-    width = inner_width,
+    width = dims.width,
     height = url_bar_height,
-    col = margin,
+    col = 0,
     row = margin + content_height + vertical_gap,
     style = "minimal",
     border = "none",

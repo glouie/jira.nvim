@@ -10,14 +10,16 @@ You can work entirely inside the repo without dropping it into your Neovim confi
 nvim README.md
 ```
 
-Once Neovim is open, extend the runtime path and load the plugin manually:
+If you keep [`:set exrc`](https://neovim.io/doc/user/options.html#'exrc') enabled, the repository-local `.nvim.lua` file automatically adds the repo to `runtimepath` and sources `plugin/jira.lua` as soon as Neovim starts inside this directory, so the default keymaps and highlights are available immediately.
+
+If you prefer not to trust local configs, extend the runtime path and load the plugin manually:
 
 ```vim
 :set rtp+=/Users/glouie/Library/Mobile\ Documents/com~apple~CloudDocs/learning/nvim/jira.nvim
 :runtime plugin/jira.lua
 ```
 
-The first command temporarily adds the repo to `runtimepath`, and the second runs the plugin entry point so `require("jira").setup()` executes. Repeat these two commands in any new Neovim session. After loading you can hover over issue keys (e.g. `SPL-12345`) and trigger the configured keymap to test changes immediately.
+The first command temporarily adds the repo to `runtimepath`, and the second runs the plugin entry point so `require("jira").setup()` executes. Repeat these two commands any time you start Neovim without the local config. After loading you can hover over issue keys (e.g. `SPL-12345`) and trigger the configured keymap to test changes immediately.
 
 ## Environment variables
 

@@ -7,12 +7,11 @@ local default_config = {
   keymap = "<leader>ji",
   issue_pattern = "%u+-%d+",
   highlight_group = "JiraIssue",
-  max_lines = 5000,
+  max_lines = -1,
   popup = {
     width = 0.65,
     height = 0.75,
     border = "rounded",
-    content_margin = 2,
   },
   api = {
     base_url = vim.env.JIRA_BASE_URL or "",

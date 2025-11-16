@@ -30,10 +30,10 @@ end
 
 function utils.encode_basic_auth(email, token)
   if not email or email == "" then
-    return nil, "JIRA_API_EMAIL is missing"
+    return nil, "API email is missing (set config.api.email or $JIRA_API_EMAIL)"
   end
   if not token or token == "" then
-    return nil, "JIRA_API_TOKEN (or JIRA_API_KEY) is missing"
+    return nil, "API token is missing (set config.api.token, $JIRA_API_TOKEN, or $JIRA_API_KEY)"
   end
   return encode_base64(string.format("%s:%s", email, token))
 end
@@ -170,15 +170,18 @@ function utils.wrap_text(text, width)
   return lines
 end
 
-function utils.format_date(value)
-  if not value or value == "" then
-    return ""
+local function parse_jira_timestamp(value)
+  if (vim and vim.NIL and value == vim.NIL) or not value or value == "" then
+    return nil
+  end
+  if type(value) ~= "string" then
+    return nil
   end
   local year, month, day, hour, minute, second = value:match("(%d+)%-(%d+)%-(%d+)T?(%d*):?(%d*):?(%d*)")
   if not year then
-    return value
+    return nil
   end
-  local timestamp = os.time({
+  return os.time({
     year = tonumber(year),
     month = tonumber(month),
     day = tonumber(day),
@@ -186,7 +189,55 @@ function utils.format_date(value)
     min = tonumber(minute) or 0,
     sec = tonumber(second) or 0,
   })
+end
+
+utils.parse_jira_timestamp = parse_jira_timestamp
+
+function utils.format_date(value)
+  if (vim and vim.NIL and value == vim.NIL) or not value or value == "" then
+    return ""
+  end
+  if type(value) ~= "string" then
+    return ""
+  end
+  local timestamp = parse_jira_timestamp(value)
+  if not timestamp then
+    return value
+  end
   return os.date("%Y-%m-%d %H:%M", timestamp)
+end
+
+function utils.humanize_duration(seconds)
+  seconds = tonumber(seconds) or 0
+  if seconds <= 0 then
+    return "Under 1m"
+  end
+  local remaining = seconds
+  local units = {
+    { label = "d", secs = 86400 },
+    { label = "h", secs = 3600 },
+    { label = "m", secs = 60 },
+  }
+  local parts = {}
+  for _, unit in ipairs(units) do
+    local value = math.floor(remaining / unit.secs)
+    if value > 0 then
+      table.insert(parts, string.format("%d%s", value, unit.label))
+      remaining = remaining - (value * unit.secs)
+    end
+    if #parts == 2 then
+      break
+    end
+  end
+  if #parts == 0 then
+    local minutes = math.floor(remaining / 60)
+    if minutes > 0 then
+      table.insert(parts, string.format("%dm", minutes))
+    else
+      table.insert(parts, "Under 1m")
+    end
+  end
+  return table.concat(parts, " ")
 end
 
 function utils.comment_body(comment)
