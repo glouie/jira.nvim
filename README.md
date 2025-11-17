@@ -19,8 +19,7 @@ Use your favourite plugin manager. Example with [`lazy.nvim`](https://github.com
 
 ```lua
 {
-  "jira.nvim",
-  dir = "/path/to/jira.nvim",
+  "glouie/jira.nvim",
   opts = {
     keymap = "<leader>ji",
     popup = {
@@ -89,5 +88,9 @@ Customize `assigned_popup` to tweak the keybinding, size, or number of issues re
 - Better formatting for rich text / description content.
 - Caching and offline support.
 - Inline commands for transitioning or commenting on issues.
+
+## License
+
+Released under the [MIT License](LICENSE).
 
 PRs and suggestions are welcome!
