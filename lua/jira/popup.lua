@@ -483,6 +483,8 @@ local list_state = {
   close_on_select = false,
   title = nil,
   source = nil,
+  search_active = false,
+  selection_before_search = nil,
 }
 
 local function clear_list_autocmd()
@@ -513,6 +515,8 @@ local function close_issue_list()
     close_on_select = false,
     title = nil,
     source = nil,
+    search_active = false,
+    selection_before_search = nil,
   }
 end
 
@@ -535,6 +539,39 @@ local function refresh_issue_list_selection()
   if list_state.win and vim.api.nvim_win_is_valid(list_state.win) then
     vim.api.nvim_win_set_cursor(list_state.win, { target_line + 1, 0 })
   end
+end
+
+local function list_row_from_cursor()
+  if not list_state.win or not vim.api.nvim_win_is_valid(list_state.win) then
+    return nil
+  end
+  local cursor = vim.api.nvim_win_get_cursor(list_state.win)
+  local line = cursor[1]
+  local idx = line - list_state.data_offset
+  if idx < 1 or idx > #(list_state.issues or {}) then
+    return nil
+  end
+  return idx
+end
+
+local function sync_list_selection_to_cursor()
+  local idx = list_row_from_cursor()
+  if not idx then
+    return
+  end
+  if list_state.selection ~= idx then
+    list_state.selection = idx
+    refresh_issue_list_selection()
+  end
+end
+
+local function restore_selection_before_search()
+  if not list_state.selection_before_search then
+    return
+  end
+  list_state.selection = list_state.selection_before_search
+  list_state.selection_before_search = nil
+  refresh_issue_list_selection()
 end
 
 local function move_issue_list_selection(delta)
@@ -1618,6 +1655,8 @@ function Popup.render_issue_list(issues, config, opts)
     close_on_select = opts.close_on_select == true,
     title = title,
     source = opts.source,
+    search_active = false,
+    selection_before_search = nil,
   }
 
   if list_state.selection then
@@ -1632,6 +1671,43 @@ function Popup.render_issue_list(issues, config, opts)
       if closed and list_state.win and closed == list_state.win then
         close_issue_list()
       end
+    end,
+  })
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    group = list_group,
+    buffer = buf,
+    callback = function()
+      sync_list_selection_to_cursor()
+    end,
+  })
+  vim.api.nvim_create_autocmd("CmdlineEnter", {
+    group = list_group,
+    pattern = { "/", "?" },
+    callback = function()
+      if not list_state.win or not vim.api.nvim_win_is_valid(list_state.win) then
+        return
+      end
+      if vim.api.nvim_get_current_win() ~= list_state.win then
+        return
+      end
+      list_state.search_active = true
+      list_state.selection_before_search = list_state.selection
+    end,
+  })
+  vim.api.nvim_create_autocmd("CmdlineLeave", {
+    group = list_group,
+    pattern = { "/", "?" },
+    callback = function()
+      if not list_state.search_active then
+        return
+      end
+      if vim.v.event and vim.v.event.abort then
+        restore_selection_before_search()
+      else
+        sync_list_selection_to_cursor()
+        list_state.selection_before_search = nil
+      end
+      list_state.search_active = false
     end,
   })
 
