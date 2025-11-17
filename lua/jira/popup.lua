@@ -3,8 +3,9 @@ local utils = require("jira.utils")
 local Popup = {}
 
 local popup_ns = vim.api.nvim_create_namespace("jira.nvim.popup")
+local list_ns = vim.api.nvim_create_namespace("jira.nvim.popup.list")
 local popup_highlights_ready = false
-local nav_hint = "Nav: j/k scroll • gg top • G bottom • Tab/S-Tab switch panes • / search • <S-N>/<S-P> next/prev • q/Esc close • o open URL"
+local nav_hint = "Nav: j/k scroll • gg top • G bottom • Tab/S-Tab switch panes • / search (n/N repeat) • <C-n>/<C-p> next/prev issue • q/Esc close • o open URL"
 local user_highlight_cache = {}
 local user_highlight_counter = 0
 local catppuccin = {
@@ -178,6 +179,26 @@ local function ensure_popup_highlights()
     default = true,
     fg = catppuccin.yellow,
     bold = true,
+  })
+  vim.api.nvim_set_hl(0, "JiraPopupListTitle", {
+    default = true,
+    fg = catppuccin.rosewater,
+    bold = true,
+  })
+  vim.api.nvim_set_hl(0, "JiraPopupListHeader", {
+    default = true,
+    fg = catppuccin.sky,
+    bold = true,
+  })
+  vim.api.nvim_set_hl(0, "JiraPopupListSelection", {
+    default = true,
+    fg = catppuccin.text,
+    bg = catppuccin.surface2,
+    bold = true,
+  })
+  vim.api.nvim_set_hl(0, "JiraPopupListEmpty", {
+    default = true,
+    fg = catppuccin.overlay1,
   })
   for level, color in ipairs(priority_colors) do
     vim.api.nvim_set_hl(0, string.format("JiraPopupPriorityLevel%d", level), {
@@ -432,6 +453,7 @@ local function apply_highlights(buf, lines, highlights, issue_pattern, ignored_p
 end
 
 local focus_group = vim.api.nvim_create_augroup("JiraPopupGuard", { clear = true })
+local list_group = vim.api.nvim_create_augroup("JiraPopupList", { clear = true })
 
 local state = {
   container_win = nil,
@@ -444,7 +466,122 @@ local state = {
   focus_autocmd = nil,
   last_focus = nil,
   navigation = nil,
+  return_focus = nil,
+  search = nil,
 }
+
+local list_state = {
+  win = nil,
+  buf = nil,
+  issues = {},
+  selection = nil,
+  data_offset = 0,
+  autocmd = nil,
+  on_select = nil,
+  pagination = nil,
+  page_handlers = nil,
+  close_on_select = false,
+  title = nil,
+  source = nil,
+}
+
+local function clear_list_autocmd()
+  if list_state.autocmd then
+    pcall(vim.api.nvim_del_autocmd, list_state.autocmd)
+    list_state.autocmd = nil
+  end
+end
+
+local function close_issue_list()
+  clear_list_autocmd()
+  if list_state.win and vim.api.nvim_win_is_valid(list_state.win) then
+    pcall(vim.api.nvim_win_close, list_state.win, true)
+  end
+  if list_state.buf and vim.api.nvim_buf_is_valid(list_state.buf) then
+    pcall(vim.api.nvim_buf_delete, list_state.buf, { force = true })
+  end
+  list_state = {
+    win = nil,
+    buf = nil,
+    issues = {},
+    selection = nil,
+    data_offset = 0,
+    autocmd = nil,
+    on_select = nil,
+    pagination = nil,
+    page_handlers = nil,
+    close_on_select = false,
+    title = nil,
+    source = nil,
+  }
+end
+
+local function refresh_issue_list_selection()
+  if not list_state.buf or not vim.api.nvim_buf_is_valid(list_state.buf) then
+    return
+  end
+  vim.api.nvim_buf_clear_namespace(list_state.buf, list_ns, 0, -1)
+  local issues = list_state.issues or {}
+  if not list_state.selection or #issues == 0 then
+    return
+  end
+  if list_state.selection < 1 then
+    list_state.selection = 1
+  elseif list_state.selection > #issues then
+    list_state.selection = #issues
+  end
+  local target_line = list_state.data_offset + list_state.selection - 1
+  vim.api.nvim_buf_add_highlight(list_state.buf, list_ns, "JiraPopupListSelection", target_line, 0, -1)
+  if list_state.win and vim.api.nvim_win_is_valid(list_state.win) then
+    vim.api.nvim_win_set_cursor(list_state.win, { target_line + 1, 0 })
+  end
+end
+
+local function move_issue_list_selection(delta)
+  if not list_state.selection or not list_state.issues or #list_state.issues == 0 then
+    return
+  end
+  list_state.selection = math.min(#list_state.issues, math.max(1, list_state.selection + delta))
+  refresh_issue_list_selection()
+end
+
+local function list_selection_context()
+  if not list_state.win or not vim.api.nvim_win_is_valid(list_state.win) then
+    return nil
+  end
+  return {
+    win = list_state.win,
+    title = list_state.title,
+    source = list_state.source,
+    selection = list_state.selection,
+    pagination = list_state.pagination,
+  }
+end
+
+local function goto_issue_list_page(delta)
+  local handlers = list_state.page_handlers or {}
+  if delta > 0 and handlers.next_page then
+    handlers.next_page()
+  elseif delta < 0 and handlers.prev_page then
+    handlers.prev_page()
+  end
+end
+
+local function activate_current_issue()
+  if not list_state.on_select or not list_state.selection or not list_state.issues then
+    return
+  end
+  local issue = list_state.issues[list_state.selection]
+  if not issue or not issue.key then
+    return
+  end
+  local handler = list_state.on_select
+  local context = list_selection_context()
+  if list_state.close_on_select then
+    close_issue_list()
+  end
+  handler(issue, context)
+end
 
 local function valid_win(win)
   return win ~= nil and vim.api.nvim_win_is_valid(win)
@@ -571,15 +708,31 @@ local function focus_previous_popup_window(current_win)
   focus_window(wins[prev_idx])
 end
 
-local function search_in_window(win, pattern, use_current_position)
-  if not valid_win(win) then
+local function record_search_pattern(pattern)
+  if not pattern or pattern == "" then
+    state.search = nil
+    return
+  end
+  state.search = { pattern = pattern }
+  pcall(vim.fn.setreg, "/", pattern)
+end
+
+local function search_in_window(win, pattern, opts)
+  opts = opts or {}
+  if not valid_win(win) or not pattern or pattern == "" then
     return false
   end
   local original_win = vim.api.nvim_get_current_win()
   if original_win ~= win then
     vim.api.nvim_set_current_win(win)
   end
-  local flags = use_current_position and "c" or "cw"
+  local flags = "w"
+  if opts.include_current ~= false then
+    flags = "c" .. flags
+  end
+  if opts.backward then
+    flags = flags .. "b"
+  end
   local ok, result = pcall(vim.fn.search, pattern, flags)
   if not ok or result == 0 then
     if original_win ~= win then
@@ -598,19 +751,21 @@ local function start_popup_search(start_win)
   if not ok or not pattern or pattern == "" then
     return
   end
-  local wins = popup_content_windows()
-  if #wins == 0 then
+  record_search_pattern(pattern)
+  if not search_in_window(start_win, pattern, { include_current = true }) then
+    vim.notify("jira.nvim: Pattern not found inside popup", vim.log.levels.INFO)
+  end
+end
+
+local function repeat_popup_search(target_win, backward)
+  local search_state = state.search
+  if not search_state or not search_state.pattern or search_state.pattern == "" then
+    vim.notify("jira.nvim: Start a search with / first", vim.log.levels.INFO)
     return
   end
-  local start_idx = find_window_index(start_win, wins) or 1
-  for offset = 0, #wins - 1 do
-    local idx = ((start_idx + offset - 1) % #wins) + 1
-    local win = wins[idx]
-    if search_in_window(win, pattern, idx == start_idx) then
-      return
-    end
+  if not search_in_window(target_win, search_state.pattern, { include_current = false, backward = backward }) then
+    vim.notify("jira.nvim: Pattern not found inside popup", vim.log.levels.INFO)
   end
-  vim.notify("jira.nvim: Pattern not found inside popup", vim.log.levels.INFO)
 end
 
 local function close_window(win)
@@ -635,18 +790,29 @@ function Popup.close()
   for _, buf in ipairs(state.buffers) do
     wipe_buffer(buf)
   end
+  local return_focus = state.return_focus
   state = {
     container_win = nil,
     main_win = nil,
     sidebar_win = nil,
     summary_win = nil,
     url_win = nil,
-    buffers = {},
-    allowed_wins = {},
-    focus_autocmd = nil,
-    last_focus = nil,
-    navigation = nil,
+  buffers = {},
+  allowed_wins = {},
+  focus_autocmd = nil,
+  last_focus = nil,
+  navigation = nil,
+  return_focus = nil,
+  search = nil,
   }
+  if return_focus and vim.api.nvim_win_is_valid(return_focus) then
+    pcall(vim.api.nvim_set_current_win, return_focus)
+  end
+end
+
+function Popup.close_all()
+  Popup.close()
+  close_issue_list()
 end
 
 local function calculate_dimensions(config)
@@ -673,6 +839,145 @@ local function calculate_dimensions(config)
     height = height,
     col = col,
     row = row,
+  }
+end
+
+local function list_dimensions(config, layout)
+  local columns = vim.o.columns
+  local lines = vim.o.lines - vim.o.cmdheight
+  local dims_config = layout or (config and config.assigned_popup) or {}
+  local width = dims_config.width or 0.55
+  local height = dims_config.height or 0.5
+  if width <= 1 then
+    width = math.floor(columns * width)
+  end
+  if height <= 1 then
+    height = math.floor(lines * height)
+  end
+  width = math.max(50, math.min(width, columns - 4))
+  height = math.max(10, math.min(height, lines - 4))
+  local col = math.floor((columns - width) / 2)
+  local row = math.floor((lines - height) / 2)
+  return {
+    width = width,
+    height = height,
+    col = col,
+    row = row,
+  }
+end
+
+local function display_width(text)
+  if vim and vim.fn and vim.fn.strdisplaywidth then
+    local ok, width = pcall(vim.fn.strdisplaywidth, text)
+    if ok then
+      return width
+    end
+  end
+  return #text
+end
+
+local function slice_by_width(text, max_width)
+  if max_width <= 0 then
+    return ""
+  end
+  if vim and vim.fn and vim.fn.strcharpart then
+    local ok, chunk = pcall(vim.fn.strcharpart, text, 0, max_width)
+    if ok then
+      return chunk
+    end
+  end
+  return text:sub(1, max_width)
+end
+
+local function truncate_cell(text, max_width)
+  text = utils.trim(text or "")
+  if text == "" then
+    return "-"
+  end
+  if max_width <= 1 then
+    return slice_by_width(text, 1)
+  end
+  local width = display_width(text)
+  if width <= max_width then
+    return text
+  end
+  local suffix = "…"
+  local safe_width = math.max(1, max_width - 1)
+  return slice_by_width(text, safe_width) .. suffix
+end
+
+local function format_issue_list_summary(pagination, issue_count)
+  if not pagination then
+    return string.format("%d issues", issue_count)
+  end
+  local total = tonumber(pagination.total)
+  local start_at = tonumber(pagination.start_at) or 0
+  local page_size = tonumber(pagination.page_size or pagination.max_results or pagination.limit) or issue_count
+  if not total or total <= 0 then
+    return string.format("%d issues", issue_count)
+  end
+  if issue_count <= 0 then
+    return string.format("No results in this page (%d total)", total)
+  end
+  local first = math.min(total, start_at + 1)
+  local last = math.min(total, start_at + issue_count)
+  local summary = string.format("Showing %d-%d of %d", first, last, total)
+  if page_size > 0 and total > page_size then
+    local page = math.floor(start_at / page_size) + 1
+    local total_pages = math.floor((total + page_size - 1) / page_size)
+    summary = string.format("%s • Page %d/%d", summary, page, math.max(total_pages, 1))
+  end
+  return summary
+end
+
+local function build_issue_list_lines(issues, dims, opts)
+  issues = issues or {}
+  opts = opts or {}
+  local title = opts.title or "Issues"
+  local lines = {}
+  local width = math.max(40, dims.width)
+  local total_count = opts.pagination and tonumber(opts.pagination.total) or #issues
+  local number_width = math.max(3, #tostring(math.max(total_count or 0, #issues)))
+  local key_width = math.max(10, math.min(22, math.floor(width * 0.28)))
+  local summary_width = math.max(20, width - key_width - number_width - 6)
+  local format_string = "%-" .. number_width .. "s │ %-" .. key_width .. "s │ %s"
+  table.insert(lines, title)
+  local subtitle = opts.subtitle
+  if not subtitle then
+    subtitle = format_issue_list_summary(opts.pagination, #issues)
+  end
+  if subtitle and subtitle ~= "" then
+    table.insert(lines, subtitle)
+  else
+    table.insert(lines, string.format("%d issues", #issues))
+  end
+  table.insert(lines, "")
+  local title_line = 1
+  local summary_line = 2
+  local header_line = #lines + 1
+  table.insert(lines, string.format(format_string, "#", "KEY", "SUMMARY"))
+  local separator_line = #lines + 1
+  table.insert(lines, string.rep("─", width))
+  local data_offset = #lines
+  local empty_line
+  if #issues == 0 then
+    empty_line = #lines + 1
+    table.insert(lines, opts.empty_message or "No issues found.")
+  else
+    for idx, issue in ipairs(issues) do
+      local key = truncate_cell(issue.key or "", key_width)
+      local summary = truncate_cell(issue.summary or "", summary_width)
+      table.insert(lines, string.format(format_string, tostring(idx), key, summary))
+    end
+  end
+  return {
+    lines = lines,
+    title_line = title_line,
+    summary_line = summary_line,
+    header_line = header_line,
+    separator_line = separator_line,
+    data_offset = data_offset,
+    empty_line = empty_line,
   }
 end
 
@@ -806,6 +1111,16 @@ end
 
 local function sidebar_lines(issue, width)
   local fields = issue.fields or {}
+  local resolution = fields.resolution
+  if vim and vim.NIL and resolution == vim.NIL then
+    resolution = nil
+  end
+  local resolution_name
+  if type(resolution) == "table" then
+    resolution_name = resolution.name
+  elseif type(resolution) == "string" then
+    resolution_name = resolution
+  end
   local assignee_name, assignee_inactive = user_display_and_status(fields.assignee)
   local reporter_name, reporter_inactive = user_display_and_status(fields.reporter)
   local open_duration_value, still_open = issue_open_duration(issue)
@@ -816,7 +1131,7 @@ local function sidebar_lines(issue, width)
   local metadata = {
     { label = "Key", value = issue.key, highlight = "key" },
     { label = "Status", value = fields.status and fields.status.name },
-    { label = "Resolution", value = fields.resolution and fields.resolution.name },
+    { label = "Resolution", value = resolution_name },
     { label = "Priority", value = fields.priority and fields.priority.name, highlight = "priority" },
     { label = "Severity", value = utils.get_severity(issue), highlight = "severity" },
     { label = "Assignee", value = assignee_name, highlight = "user", inactive = assignee_inactive },
@@ -1102,8 +1417,24 @@ local function format_popup_title(issue_key, nav)
   return title
 end
 
+local function sanitize_lines(lines)
+  -- nvim_buf_set_lines rejects entries containing newline characters
+  local sanitized = {}
+  for _, line in ipairs(lines or {}) do
+    if type(line) ~= "string" then
+      line = tostring(line)
+    end
+    if line:find("[\r\n]") then
+      line = line:gsub("[\r\n]", " ")
+    end
+    table.insert(sanitized, line)
+  end
+  return sanitized
+end
+
 local function fill_buffer(buf, lines, opts)
   opts = opts or {}
+  lines = sanitize_lines(lines)
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
@@ -1151,6 +1482,12 @@ local function map_popup_keys(buf, issue, config, nav_controls)
   local function search_popup()
     start_popup_search(vim.api.nvim_get_current_win())
   end
+  local function repeat_search_forward()
+    repeat_popup_search(vim.api.nvim_get_current_win(), false)
+  end
+  local function repeat_search_backward()
+    repeat_popup_search(vim.api.nvim_get_current_win(), true)
+  end
   local function focus_next()
     focus_next_popup_window(vim.api.nvim_get_current_win())
   end
@@ -1161,218 +1498,420 @@ local function map_popup_keys(buf, issue, config, nav_controls)
   vim.keymap.set("n", "<Esc>", close_popup, opts)
   vim.keymap.set("n", "o", open_in_browser, opts)
   vim.keymap.set("n", "/", search_popup, opts)
+  vim.keymap.set("n", "n", repeat_search_forward, opts)
+  vim.keymap.set("n", "N", repeat_search_backward, opts)
   vim.keymap.set("n", "<Tab>", focus_next, opts)
   vim.keymap.set("n", "<S-Tab>", focus_prev, opts)
   if nav_controls and nav_controls.next_issue then
-    vim.keymap.set("n", "<S-N>", nav_controls.next_issue, opts)
+    vim.keymap.set("n", "<C-n>", nav_controls.next_issue, opts)
   end
   if nav_controls and nav_controls.prev_issue then
-    vim.keymap.set("n", "<S-P>", nav_controls.prev_issue, opts)
+    vim.keymap.set("n", "<C-p>", nav_controls.prev_issue, opts)
   end
   for _, seq in ipairs({ "<C-w><Left>", "<C-w><Right>", "<C-w><Up>", "<C-w><Down>", "<C-w><", "<C-w>>", "<C-w>+", "<C-w>-", "<C-w>|", "<C-w>_" }) do
     vim.keymap.set("n", seq, function() end, opts)
   end
 end
 
-function Popup.render(issue, config, context)
+local function show_render_error(message)
+  local buf = vim.api.nvim_create_buf(false, true)
+  local lines = {
+    "jira.nvim: failed to render issue popup",
+    tostring(message or "Unknown error"),
+    "",
+    "Press <Esc> or q to close",
+  }
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].filetype = "jira_popup_error"
+  vim.bo[buf].swapfile = false
+  local width = 0
+  for _, line in ipairs(lines) do
+    width = math.max(width, #line)
+  end
+  width = math.min(math.max(30, width + 4), vim.o.columns - 2)
+  local height = #lines + 2
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    col = math.floor((vim.o.columns - width) / 2),
+    row = math.floor((vim.o.lines - height) / 2),
+    style = "minimal",
+    border = "rounded",
+    title = "jira.nvim error",
+    title_pos = "center",
+  })
+  local close_opts = { buffer = buf, nowait = true, silent = true }
+  local function close()
+    close_window(win)
+    wipe_buffer(buf)
+  end
+  vim.keymap.set("n", "<Esc>", close, close_opts)
+  vim.keymap.set("n", "q", close, close_opts)
+end
+
+function Popup.render_issue_list(issues, config, opts)
   Popup.close()
-
-  config = config or {}
-  config.popup = config.popup or {}
-  context = context or {}
+  close_issue_list()
   ensure_popup_highlights()
+  config = config or {}
+  opts = opts or {}
+  issues = issues or {}
 
-  local nav_context = context.navigation
-  state.navigation = nav_context
-  local nav_controls = nil
-  if nav_context then
-    nav_controls = {
-      next_issue = nav_context.goto_next,
-      prev_issue = nav_context.goto_prev,
-    }
-  end
+  local layout_cfg = opts.layout or (config and config.assigned_popup) or {}
+  local dims = list_dimensions(config, layout_cfg)
+  local border = layout_cfg.border or (config.popup and config.popup.border) or "rounded"
+  local title = opts.title or layout_cfg.title or "Assigned Issues"
 
-  local dims = calculate_dimensions(config)
-  local pane_gap = 2
-  local vertical_gap = 0
-  local url_bar_height = 2
-  local min_inner_width = 56
-  local min_content_height = 8
-  local inner_width = math.max(min_inner_width, dims.width)
-  local content_height = math.max(min_content_height, dims.height - url_bar_height - vertical_gap)
-  local summary_margin_left = 1
-  local main_margin_left = 1
-  local sidebar_margin_left = 1
-  local url_margin_left = 1
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].filetype = "jiraissue-list"
 
-  local sidebar_width = math.max(24, math.floor(inner_width * 0.32))
-  local max_sidebar = inner_width - pane_gap - 30
-  if sidebar_width > max_sidebar then
-    sidebar_width = math.max(24, max_sidebar)
-  end
-  if sidebar_width < 24 then
-    sidebar_width = 24
-  end
-  local main_width = inner_width - sidebar_width - pane_gap
-  if main_width < 30 then
-    main_width = math.max(30, main_width)
-    sidebar_width = inner_width - main_width - pane_gap
-  end
-  if sidebar_width < 24 then
-    sidebar_width = 24
-    main_width = inner_width - sidebar_width - pane_gap
-  end
-
-  local summary_width = math.max(1, inner_width - summary_margin_left)
-  local main_width_with_margin = math.max(1, main_width - main_margin_left)
-  local sidebar_width_with_margin = math.max(1, sidebar_width - sidebar_margin_left)
-  local url_width = math.max(1, inner_width - url_margin_left)
-
-  local container_buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_lines(container_buf, 0, -1, false, { "" })
-  vim.bo[container_buf].bufhidden = "wipe"
-  vim.bo[container_buf].filetype = "jira_popup_container"
-  vim.bo[container_buf].modifiable = false
-
-  local container_win = vim.api.nvim_open_win(container_buf, false, {
+  local win = vim.api.nvim_open_win(buf, true, {
     relative = "editor",
     width = dims.width,
     height = dims.height,
     col = dims.col,
     row = dims.row,
     style = "minimal",
-    border = "double",
-    title = format_popup_title(issue.key, nav_context),
-    title_pos = "center",
-    zindex = 50,
-    focusable = false,
+    border = border,
   })
-  vim.api.nvim_win_set_option(container_win, "winhl", "FloatTitle:JiraPopupTitleBar")
 
-  local summary_buf = vim.api.nvim_create_buf(false, true)
-  local main_buf = vim.api.nvim_create_buf(false, true)
-  local sidebar_buf = vim.api.nvim_create_buf(false, true)
-  local url_buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_option(win, "wrap", false)
+  vim.api.nvim_win_set_option(win, "winhl", "Normal:JiraPopupDetailsBody,FloatBorder:JiraPopupDetailsHeader")
 
-  local main_content, main_highlights = main_lines(issue, math.max(20, main_width_with_margin - 1), config)
-  local sidebar_content, sidebar_highlights = sidebar_lines(issue, math.max(20, sidebar_width_with_margin - 1))
-  local url_content, url_highlights = url_bar_lines(issue, config, url_width)
-  local summary_lines, summary_highlights = summary_bar_lines(issue, summary_width)
-  local summary_line_count = math.min(#main_content, 2)
-  local main_body_lines = {}
-  local main_body_highlights = {}
-  for idx, line in ipairs(main_content) do
-    if idx > summary_line_count then
-      table.insert(main_body_lines, line)
+  local layout = build_issue_list_lines(issues, dims, {
+    title = title,
+    pagination = opts.pagination,
+    subtitle = opts.subtitle,
+    empty_message = opts.empty_message,
+  })
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, layout.lines)
+  vim.bo[buf].modifiable = false
+
+  if layout.title_line then
+    vim.api.nvim_buf_add_highlight(buf, popup_ns, "JiraPopupListTitle", layout.title_line - 1, 0, -1)
+  end
+  if layout.summary_line then
+    vim.api.nvim_buf_add_highlight(buf, popup_ns, "JiraPopupListTitle", layout.summary_line - 1, 0, -1)
+  end
+  if layout.header_line then
+    vim.api.nvim_buf_add_highlight(buf, popup_ns, "JiraPopupListHeader", layout.header_line - 1, 0, -1)
+  end
+  if layout.empty_line then
+    vim.api.nvim_buf_add_highlight(buf, popup_ns, "JiraPopupListEmpty", layout.empty_line - 1, 0, -1)
+  end
+
+  list_state = {
+    win = win,
+    buf = buf,
+    issues = issues,
+    selection = (#issues > 0) and 1 or nil,
+    data_offset = layout.data_offset,
+    autocmd = nil,
+    on_select = opts.on_select,
+    pagination = opts.pagination,
+    page_handlers = opts.pagination_handlers,
+    close_on_select = opts.close_on_select == true,
+    title = title,
+    source = opts.source,
+  }
+
+  if list_state.selection then
+    refresh_issue_list_selection()
+  end
+
+  vim.api.nvim_clear_autocmds({ group = list_group })
+  list_state.autocmd = vim.api.nvim_create_autocmd("WinClosed", {
+    group = list_group,
+    callback = function(args)
+      local closed = tonumber(args.match)
+      if closed and list_state.win and closed == list_state.win then
+        close_issue_list()
+      end
+    end,
+  })
+
+  local key_opts = { buffer = buf, nowait = true, silent = true }
+  vim.keymap.set("n", "q", Popup.close_all, key_opts)
+  vim.keymap.set("n", "<Esc>", Popup.close_all, key_opts)
+  vim.keymap.set("n", "j", function()
+    move_issue_list_selection(1)
+  end, key_opts)
+  vim.keymap.set("n", "k", function()
+    move_issue_list_selection(-1)
+  end, key_opts)
+  vim.keymap.set("n", "<Down>", function()
+    move_issue_list_selection(1)
+  end, key_opts)
+  vim.keymap.set("n", "<Up>", function()
+    move_issue_list_selection(-1)
+  end, key_opts)
+  vim.keymap.set("n", "<S-N>", function()
+    move_issue_list_selection(1)
+  end, key_opts)
+  vim.keymap.set("n", "<S-P>", function()
+    move_issue_list_selection(-1)
+  end, key_opts)
+  vim.keymap.set("n", "<C-f>", function()
+    goto_issue_list_page(1)
+  end, key_opts)
+  vim.keymap.set("n", "<C-b>", function()
+    goto_issue_list_page(-1)
+  end, key_opts)
+  vim.keymap.set("n", "<CR>", activate_current_issue, key_opts)
+
+  return win
+end
+
+function Popup.render(issue, config, context)
+  Popup.close()
+  local created_bufs = {}
+  local created_wins = {}
+  local function track_buf(buf)
+    if buf then
+      table.insert(created_bufs, buf)
     end
   end
-  for _, mark in ipairs(main_highlights) do
-    if mark.line >= summary_line_count then
-      table.insert(main_body_highlights, {
-        group = mark.group,
-        line = mark.line - summary_line_count,
-        start_col = mark.start_col,
-        end_col = mark.end_col,
-      })
+  local function track_win(win)
+    if win then
+      table.insert(created_wins, win)
     end
   end
-  if not summary_lines or #summary_lines == 0 then
-    summary_lines = { "" }
-    summary_highlights = {}
-  end
-  local summary_height = #summary_lines
-  local scrollable_height = content_height - summary_height
-  if scrollable_height < 4 then
-    scrollable_height = math.max(4, content_height - 1)
-    summary_height = math.max(1, content_height - scrollable_height)
+  local function cleanup_partials()
+    for _, win in ipairs(created_wins) do
+      close_window(win)
+    end
+    for _, buf in ipairs(created_bufs) do
+      wipe_buffer(buf)
+    end
   end
 
-  fill_buffer(summary_buf, summary_lines)
-  fill_buffer(main_buf, main_body_lines, { syntax = { "markdown", "markdown_inline" } })
-  fill_buffer(sidebar_buf, sidebar_content)
-  fill_buffer(url_buf, url_content)
+  local ok, err = xpcall(function()
+    config = config or {}
+    config.popup = config.popup or {}
+    context = context or {}
+    ensure_popup_highlights()
 
-  local ignored_projects = config._ignored_project_map
-  apply_highlights(summary_buf, summary_lines, summary_highlights, config.issue_pattern, ignored_projects)
-  apply_highlights(main_buf, main_body_lines, main_body_highlights, config.issue_pattern, ignored_projects)
-  apply_highlights(sidebar_buf, sidebar_content, sidebar_highlights, config.issue_pattern, ignored_projects)
-  apply_highlights(url_buf, url_content, url_highlights, config.issue_pattern, ignored_projects)
+    local nav_context = context.navigation
+    state.navigation = nav_context
+    state.return_focus = context.return_focus
+    local nav_controls = nil
+    if nav_context then
+      nav_controls = {
+        next_issue = nav_context.goto_next,
+        prev_issue = nav_context.goto_prev,
+      }
+    end
 
-  local summary_win = vim.api.nvim_open_win(summary_buf, false, {
-    relative = "win",
-    win = container_win,
-    width = summary_width,
-    height = summary_height,
-    col = summary_margin_left,
-    row = 0,
-    style = "minimal",
-    border = "none",
-    zindex = 60,
-    focusable = false,
-  })
-  vim.api.nvim_win_set_option(summary_win, "winhl", "Normal:JiraPopupSummaryBackground,NormalNC:JiraPopupSummaryBackground")
+    local dims = calculate_dimensions(config)
+    local pane_gap = 2
+    local vertical_gap = 0
+    local url_bar_height = 2
+    local min_inner_width = 56
+    local min_content_height = 8
+    local inner_width = math.max(min_inner_width, dims.width)
+    local content_height = math.max(min_content_height, dims.height - url_bar_height - vertical_gap)
+    local summary_margin_left = 1
+    local main_margin_left = 1
+    local sidebar_margin_left = 1
+    local url_margin_left = 1
 
-  local main_win = vim.api.nvim_open_win(main_buf, true, {
-    relative = "win",
-    win = container_win,
-    width = main_width_with_margin,
-    height = scrollable_height,
-    col = main_margin_left,
-    row = summary_height,
-    style = "minimal",
-    border = "none",
-    zindex = 60,
-  })
+    local sidebar_width = math.max(24, math.floor(inner_width * 0.32))
+    local max_sidebar = inner_width - pane_gap - 30
+    if sidebar_width > max_sidebar then
+      sidebar_width = math.max(24, max_sidebar)
+    end
+    if sidebar_width < 24 then
+      sidebar_width = 24
+    end
+    local main_width = inner_width - sidebar_width - pane_gap
+    if main_width < 30 then
+      main_width = math.max(30, main_width)
+      sidebar_width = inner_width - main_width - pane_gap
+    end
+    if sidebar_width < 24 then
+      sidebar_width = 24
+      main_width = inner_width - sidebar_width - pane_gap
+    end
 
-  local sidebar_win = vim.api.nvim_open_win(sidebar_buf, false, {
-    relative = "win",
-    win = container_win,
-    width = sidebar_width_with_margin,
-    height = scrollable_height,
-    col = main_width + pane_gap + sidebar_margin_left,
-    row = summary_height,
-    style = "minimal",
-    border = "none",
-    zindex = 60,
-  })
-  vim.api.nvim_win_set_option(sidebar_win, "winhl", "Normal:JiraPopupDetailsBody,NormalNC:JiraPopupDetailsBody")
+    local summary_width = math.max(1, inner_width - summary_margin_left)
+    local main_width_with_margin = math.max(1, main_width - main_margin_left)
+    local sidebar_width_with_margin = math.max(1, sidebar_width - sidebar_margin_left)
+    local url_width = math.max(1, inner_width - url_margin_left)
 
-  local url_win = vim.api.nvim_open_win(url_buf, false, {
-    relative = "win",
-    win = container_win,
-    width = url_width,
-    height = url_bar_height,
-    col = url_margin_left,
-    row = content_height + vertical_gap,
-    style = "minimal",
-    border = "none",
-    zindex = 60,
-  })
-  vim.api.nvim_win_set_option(url_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
+    local container_buf = vim.api.nvim_create_buf(false, true)
+    track_buf(container_buf)
+    vim.api.nvim_buf_set_lines(container_buf, 0, -1, false, { "" })
+    vim.bo[container_buf].bufhidden = "wipe"
+    vim.bo[container_buf].filetype = "jira_popup_container"
+    vim.bo[container_buf].modifiable = false
 
-  lock_window_size(summary_win)
-  lock_window_size(main_win)
-  lock_window_size(sidebar_win)
-  lock_window_size(url_win)
+    local container_win = vim.api.nvim_open_win(container_buf, false, {
+      relative = "editor",
+      width = dims.width,
+      height = dims.height,
+      col = dims.col,
+      row = dims.row,
+      style = "minimal",
+      border = "double",
+      title = format_popup_title(issue.key, nav_context),
+      title_pos = "center",
+      zindex = 50,
+      focusable = false,
+    })
+    track_win(container_win)
+    vim.api.nvim_win_set_option(container_win, "winhl", "FloatTitle:JiraPopupTitleBar")
 
-  local fields = issue.fields or {}
-  local status_name = fields.status and fields.status.name or "--"
-  apply_statusline(main_win, status_name)
-  apply_statusline(sidebar_win, status_name)
+    local summary_buf = vim.api.nvim_create_buf(false, true)
+    local main_buf = vim.api.nvim_create_buf(false, true)
+    local sidebar_buf = vim.api.nvim_create_buf(false, true)
+    local url_buf = vim.api.nvim_create_buf(false, true)
+    track_buf(summary_buf)
+    track_buf(main_buf)
+    track_buf(sidebar_buf)
+    track_buf(url_buf)
 
-  map_popup_keys(main_buf, issue, config, nav_controls)
-  map_popup_keys(sidebar_buf, issue, config, nav_controls)
-  map_popup_keys(url_buf, issue, config, nav_controls)
+    local main_content, main_highlights = main_lines(issue, math.max(20, main_width_with_margin - 1), config)
+    local sidebar_content, sidebar_highlights = sidebar_lines(issue, math.max(20, sidebar_width_with_margin - 1))
+    local url_content, url_highlights = url_bar_lines(issue, config, url_width)
+    local summary_lines, summary_highlights = summary_bar_lines(issue, summary_width)
+    local summary_line_count = math.min(#main_content, 2)
+    local main_body_lines = {}
+    local main_body_highlights = {}
+    for idx, line in ipairs(main_content) do
+      if idx > summary_line_count then
+        table.insert(main_body_lines, line)
+      end
+    end
+    for _, mark in ipairs(main_highlights) do
+      if mark.line >= summary_line_count then
+        table.insert(main_body_highlights, {
+          group = mark.group,
+          line = mark.line - summary_line_count,
+          start_col = mark.start_col,
+          end_col = mark.end_col,
+        })
+      end
+    end
+    if not summary_lines or #summary_lines == 0 then
+      summary_lines = { "" }
+      summary_highlights = {}
+    end
+    local summary_height = #summary_lines
+    local scrollable_height = content_height - summary_height
+    if scrollable_height < 4 then
+      scrollable_height = math.max(4, content_height - 1)
+      summary_height = math.max(1, content_height - scrollable_height)
+    end
 
-  state.container_win = container_win
-  state.main_win = main_win
-  state.sidebar_win = sidebar_win
-  state.summary_win = summary_win
-  state.url_win = url_win
-  state.buffers = { container_buf, summary_buf, main_buf, sidebar_buf, url_buf }
-  update_allowed_wins()
-  activate_focus_guard()
-  focus_window(main_win)
+    -- Keymaps are set before rendering so Esc/q can close even if later steps fail.
+    map_popup_keys(main_buf, issue, config, nav_controls)
+    map_popup_keys(sidebar_buf, issue, config, nav_controls)
+    map_popup_keys(url_buf, issue, config, nav_controls)
+
+    fill_buffer(summary_buf, summary_lines)
+    fill_buffer(main_buf, main_body_lines, { syntax = { "markdown", "markdown_inline" } })
+    fill_buffer(sidebar_buf, sidebar_content)
+    fill_buffer(url_buf, url_content)
+
+    local ignored_projects = config._ignored_project_map
+    apply_highlights(summary_buf, summary_lines, summary_highlights, config.issue_pattern, ignored_projects)
+    apply_highlights(main_buf, main_body_lines, main_body_highlights, config.issue_pattern, ignored_projects)
+    apply_highlights(sidebar_buf, sidebar_content, sidebar_highlights, config.issue_pattern, ignored_projects)
+    apply_highlights(url_buf, url_content, url_highlights, config.issue_pattern, ignored_projects)
+
+    local summary_win = vim.api.nvim_open_win(summary_buf, false, {
+      relative = "win",
+      win = container_win,
+      width = summary_width,
+      height = summary_height,
+      col = summary_margin_left,
+      row = 0,
+      style = "minimal",
+      border = "none",
+      zindex = 60,
+      focusable = false,
+    })
+    track_win(summary_win)
+    vim.api.nvim_win_set_option(summary_win, "winhl", "Normal:JiraPopupSummaryBackground,NormalNC:JiraPopupSummaryBackground")
+
+    local main_win = vim.api.nvim_open_win(main_buf, true, {
+      relative = "win",
+      win = container_win,
+      width = main_width_with_margin,
+      height = scrollable_height,
+      col = main_margin_left,
+      row = summary_height,
+      style = "minimal",
+      border = "none",
+      zindex = 60,
+    })
+    track_win(main_win)
+    vim.api.nvim_win_set_option(main_win, "conceallevel", 0)
+
+    local sidebar_win = vim.api.nvim_open_win(sidebar_buf, false, {
+      relative = "win",
+      win = container_win,
+      width = sidebar_width_with_margin,
+      height = scrollable_height,
+      col = main_width + pane_gap + sidebar_margin_left,
+      row = summary_height,
+      style = "minimal",
+      border = "none",
+      zindex = 60,
+    })
+    track_win(sidebar_win)
+    vim.api.nvim_win_set_option(sidebar_win, "conceallevel", 0)
+    vim.api.nvim_win_set_option(sidebar_win, "winhl", "Normal:JiraPopupDetailsBody,NormalNC:JiraPopupDetailsBody")
+
+    local url_win = vim.api.nvim_open_win(url_buf, false, {
+      relative = "win",
+      win = container_win,
+      width = url_width,
+      height = url_bar_height,
+      col = url_margin_left,
+      row = content_height + vertical_gap,
+      style = "minimal",
+      border = "none",
+      zindex = 60,
+    })
+    track_win(url_win)
+    vim.api.nvim_win_set_option(url_win, "conceallevel", 0)
+    vim.api.nvim_win_set_option(url_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
+
+    lock_window_size(summary_win)
+    lock_window_size(main_win)
+    lock_window_size(sidebar_win)
+    lock_window_size(url_win)
+
+    local fields = issue.fields or {}
+    local status_name = fields.status and fields.status.name or "--"
+    apply_statusline(main_win, status_name)
+    apply_statusline(sidebar_win, status_name)
+
+    state.container_win = container_win
+    state.main_win = main_win
+    state.sidebar_win = sidebar_win
+    state.summary_win = summary_win
+    state.url_win = url_win
+    state.buffers = { container_buf, summary_buf, main_buf, sidebar_buf, url_buf }
+    update_allowed_wins()
+    activate_focus_guard()
+    focus_window(main_win)
+    created_bufs = {}
+    created_wins = {}
+  end, debug.traceback)
+
+  if not ok then
+    cleanup_partials()
+    Popup.close()
+    vim.notify("jira.nvim: popup render failed: " .. tostring(err), vim.log.levels.ERROR)
+    show_render_error(err)
+  end
 end
 
 return Popup

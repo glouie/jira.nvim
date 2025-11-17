@@ -50,8 +50,31 @@ end
 
 utils.json_decode = json_decode
 
+local function json_encode(payload)
+  if payload == nil then
+    return "null"
+  end
+  if vim.json and vim.json.encode then
+    return vim.json.encode(payload)
+  end
+  return vim.fn.json_encode(payload)
+end
+
+utils.json_encode = json_encode
+
 function utils.trim(text)
   return (text and text:gsub("^%s+", ""):gsub("%s+$", "")) or ""
+end
+
+function utils.url_encode(value)
+  if value == nil then
+    return ""
+  end
+  local text = tostring(value)
+  text = text:gsub("\n", "\r\n")
+  return text:gsub("([^%w%-_%.~])", function(char)
+    return string.format("%%%02X", char:byte())
+  end)
 end
 
 local function adf_node_to_text(node, indent)

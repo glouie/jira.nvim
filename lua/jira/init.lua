@@ -1,5 +1,6 @@
 local api = require("jira.api")
 local popup = require("jira.popup")
+local utils = require("jira.utils")
 
 local M = {}
 
@@ -9,6 +10,20 @@ local default_config = {
   highlight_group = "JiraIssue",
   max_lines = -1,
   ignored_projects = { "SEV" },
+  assigned_popup = {
+    keymap = "<leader>ja",
+    width = 0.55,
+    height = 0.5,
+    border = "rounded",
+    max_results = 50,
+  },
+  search_popup = {
+    keymap = "<leader>js",
+    width = 0.6,
+    height = 0.6,
+    border = "rounded",
+    max_results = 50,
+  },
   popup = {
     width = 0.65,
     height = 0.75,
@@ -26,6 +41,7 @@ local ns = vim.api.nvim_create_namespace("jira.nvim")
 local group = vim.api.nvim_create_augroup("jira.nvim", { clear = true })
 local navigation_state
 local move_navigation
+local last_jql_query
 local function rebuild_ignored_project_map()
   local map = {}
   for _, project in ipairs(config.ignored_projects or {}) do
@@ -253,6 +269,8 @@ function M.setup(opts)
   config = vim.tbl_deep_extend("force", vim.deepcopy(default_config), opts)
   config.api = vim.tbl_deep_extend("force", vim.deepcopy(default_config.api), opts.api or {})
   config.popup = vim.tbl_deep_extend("force", vim.deepcopy(default_config.popup), opts.popup or {})
+  config.assigned_popup = vim.tbl_deep_extend("force", vim.deepcopy(default_config.assigned_popup), opts.assigned_popup or {})
+  config.search_popup = vim.tbl_deep_extend("force", vim.deepcopy(default_config.search_popup), opts.search_popup or {})
   rebuild_ignored_project_map()
   ensure_highlight()
   attach_autocmds()
@@ -260,6 +278,18 @@ function M.setup(opts)
     vim.keymap.set("n", config.keymap, function()
       M.open_issue_under_cursor()
     end, { desc = "jira.nvim: open issue details" })
+  end
+  local assigned_keymap = config.assigned_popup and config.assigned_popup.keymap
+  if assigned_keymap and assigned_keymap ~= "" then
+    vim.keymap.set("n", assigned_keymap, function()
+      M.open_assigned_issues()
+    end, { desc = "jira.nvim: list assigned issues" })
+  end
+  local search_keymap = config.search_popup and config.search_popup.keymap
+  if search_keymap and search_keymap ~= "" then
+    vim.keymap.set("n", search_keymap, function()
+      M.open_jql_search()
+    end, { desc = "jira.nvim: search Jira via JQL" })
   end
   highlight_buffer(vim.api.nvim_get_current_buf())
 end
@@ -276,6 +306,7 @@ function M.open_issue(issue_key, opts)
     return
   end
   opts = opts or {}
+  local return_focus = opts.return_focus
   if opts.navigation ~= nil then
     navigation_state = opts.navigation
   else
@@ -295,7 +326,7 @@ function M.open_issue(issue_key, opts)
         end
         nav_context = navigation_payload()
       end
-      popup.render(issue, config, { navigation = nav_context })
+      popup.render(issue, config, { navigation = nav_context, return_focus = return_focus })
     end)
   end)
 end
@@ -313,6 +344,136 @@ end
 
 function M.refresh(bufnr)
   highlight_buffer(bufnr or vim.api.nvim_get_current_buf())
+end
+
+local function open_issue_from_list(issue, ctx)
+  if not issue or not issue.key then
+    return
+  end
+  local win = ctx and ctx.win
+  if win and vim.api.nvim_win_is_valid(win) then
+    M.open_issue(issue.key, { return_focus = win })
+  else
+    M.open_issue(issue.key)
+  end
+end
+
+local function render_assigned_page(start_at)
+  api.fetch_assigned_issues(config, { start_at = start_at }, function(result, err)
+    vim.schedule(function()
+      if err then
+        vim.notify(string.format("jira.nvim: %s", err), vim.log.levels.ERROR)
+        return
+      end
+      result = result or {}
+      local issues = result.issues or {}
+      local page_size = math.max(1, tonumber(result.max_results) or config.assigned_popup.max_results or 50)
+      local start_idx = math.max(0, tonumber(result.start_at) or start_at or 0)
+      local total = tonumber(result.total)
+      if not total or total <= 0 then
+        total = start_idx + #issues
+      end
+      local pagination = {
+        total = total,
+        start_at = start_idx,
+        page_size = page_size,
+      }
+      local has_prev = start_idx > 0
+      local has_next = (#issues == page_size) and ((not result.total) or (start_idx + #issues < result.total))
+      local handlers = {}
+      if has_next then
+        handlers.next_page = function()
+          render_assigned_page(start_idx + page_size)
+        end
+      end
+      if has_prev then
+        handlers.prev_page = function()
+          render_assigned_page(math.max(0, start_idx - page_size))
+        end
+      end
+      popup.render_issue_list(issues, config, {
+        title = "Assigned Issues",
+        empty_message = "No unresolved issues assigned to you.",
+        pagination = pagination,
+        pagination_handlers = handlers,
+        on_select = open_issue_from_list,
+      })
+    end)
+  end)
+end
+
+local function render_jql_page(jql, start_at)
+  api.search_issues(config, {
+    jql = jql,
+    start_at = start_at,
+    max_results = config.search_popup and config.search_popup.max_results,
+  }, function(result, err)
+    vim.schedule(function()
+      if err then
+        vim.notify(string.format("jira.nvim: %s", err), vim.log.levels.ERROR)
+        return
+      end
+      result = result or {}
+      local issues = result.issues or {}
+      local page_size = math.max(1, tonumber(result.max_results) or (config.search_popup and config.search_popup.max_results) or 50)
+      local start_idx = math.max(0, tonumber(result.start_at) or start_at or 0)
+      local total = tonumber(result.total)
+      if not total or total <= 0 then
+        total = start_idx + #issues
+      end
+      local pagination = {
+        total = total,
+        start_at = start_idx,
+        page_size = page_size,
+      }
+      local has_prev = start_idx > 0
+      local has_next = (#issues == page_size) and ((not result.total) or (start_idx + #issues < result.total))
+      local handlers = {}
+      if has_next then
+        handlers.next_page = function()
+          render_jql_page(jql, start_idx + page_size)
+        end
+      end
+      if has_prev then
+        handlers.prev_page = function()
+          render_jql_page(jql, math.max(0, start_idx - page_size))
+        end
+      end
+      popup.render_issue_list(issues, config, {
+        title = "JQL Search",
+        empty_message = string.format("No issues match JQL: %s", jql),
+        pagination = pagination,
+        pagination_handlers = handlers,
+        layout = config.search_popup,
+        on_select = open_issue_from_list,
+        source = "jql",
+      })
+    end)
+  end)
+end
+
+function M.open_assigned_issues()
+  render_assigned_page(0)
+end
+
+function M.open_jql_search()
+  local default_query = last_jql_query or ""
+  local function submit(input)
+    local query = utils.trim(input or "")
+    if query == "" then
+      return
+    end
+    last_jql_query = query
+    render_jql_page(query, 0)
+  end
+  if vim.ui and vim.ui.input then
+    vim.ui.input({ prompt = "JQL query: ", default = default_query }, submit)
+  else
+    local ok, value = pcall(vim.fn.input, "JQL query: ", default_query)
+    if ok then
+      submit(value)
+    end
+  end
 end
 
 return M

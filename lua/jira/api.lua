@@ -2,14 +2,83 @@ local utils = require("jira.utils")
 
 local M = {}
 
+local function resolve_log_path()
+  local info = debug.getinfo(1, "S")
+  if info and info.source and info.source:sub(1, 1) == "@" then
+    local script = info.source:sub(2)
+    if script and script ~= "" then
+      local root = vim.fn.fnamemodify(script, ":p:h:h:h")
+      if root ~= "" then
+        return root .. "/api_access.log"
+      end
+    end
+  end
+  local fallback = vim.fn.stdpath("cache")
+  return fallback .. "/jira.nvim/api_access.log"
+end
+
+local function ensure_log_directory(path)
+  local dir = vim.fn.fnamemodify(path, ":p:h")
+  if dir ~= "" then
+    pcall(vim.fn.mkdir, dir, "p")
+  end
+end
+
+local api_log_path = resolve_log_path()
+ensure_log_directory(api_log_path)
+
+local function log_api_access(event, details)
+  local timestamp = os.date("%Y-%m-%d %H:%M:%S")
+  local message = string.format("[%s] %s: %s\n", timestamp, event, details or "")
+  local ok, file = pcall(io.open, api_log_path, "a")
+  if not ok or not file then
+    return
+  end
+  file:write(message)
+  file:close()
+end
+
+local function sanitize_args(args)
+  local sanitized = {}
+  local i = 1
+  while i <= #args do
+    local arg = args[i]
+    if arg == "-H" then
+      local header = args[i + 1]
+      table.insert(sanitized, arg)
+      if type(header) == "string" and header:lower():find("^authorization:%s*basic") then
+        table.insert(sanitized, "Authorization: Basic [REDACTED]")
+      elseif header ~= nil then
+        table.insert(sanitized, header)
+      end
+      i = i + 2
+    else
+      table.insert(sanitized, arg)
+      i = i + 1
+    end
+  end
+  return sanitized
+end
+
+local function format_args_for_log(args)
+  local ok, inspected = pcall(vim.inspect, args)
+  if ok and inspected then
+    return inspected
+  end
+  return table.concat(args, " ")
+end
+
 local function run_command(args, callback)
+  log_api_access("REQUEST", format_args_for_log(sanitize_args(args)))
   if vim.system then
     return vim.system(args, { text = true }, function(obj)
       if obj.code ~= 0 then
         local err = obj.stderr ~= "" and obj.stderr or string.format("curl exited with %d", obj.code)
+        log_api_access("ERROR", string.format("exit=%d\n%s", obj.code, utils.trim(err)))
         callback(nil, utils.trim(err))
         return
       end
+      log_api_access("RESPONSE", obj.stdout or "")
       callback(obj.stdout, nil)
     end)
   end
@@ -40,14 +109,19 @@ local function run_command(args, callback)
     end,
     on_exit = function(_, code)
       if code ~= 0 then
-        callback(nil, table.concat(stderr, "\n"))
-      else
-        callback(table.concat(stdout, "\n"), nil)
+        local err = table.concat(stderr, "\n")
+        log_api_access("ERROR", string.format("exit=%d\n%s", code, err))
+        callback(nil, err)
+        return
       end
+      local output = table.concat(stdout, "\n")
+      log_api_access("RESPONSE", output)
+      callback(output, nil)
     end,
   })
 
   if not ok or job <= 0 then
+    log_api_access("ERROR", "failed to spawn curl - ensure it is available in PATH")
     callback(nil, "failed to spawn curl - ensure it is available in PATH")
   end
 end
@@ -59,21 +133,34 @@ local function normalize_base_url(url)
   return url:gsub("/*$", "")
 end
 
-local function build_get_args(endpoint, auth_header)
-  return {
+local function build_request_args(method, endpoint, auth_header, body)
+  local args = {
     "curl",
     "-sS",
     "-f",
     "-X",
-    "GET",
+    method,
     "-H",
     "Accept: application/json",
     "-H",
     "Content-Type: application/json",
     "-H",
     "Authorization: Basic " .. auth_header,
-    endpoint,
   }
+  if body and body ~= "" then
+    table.insert(args, "-d")
+    table.insert(args, body)
+  end
+  table.insert(args, endpoint)
+  return args
+end
+
+local function build_get_args(endpoint, auth_header)
+  return build_request_args("GET", endpoint, auth_header)
+end
+
+local function build_post_args(endpoint, auth_header, body)
+  return build_request_args("POST", endpoint, auth_header, body)
 end
 
 local connection_error_codes = {
@@ -271,6 +358,229 @@ function M.fetch_issue(issue_key, config, callback)
       return
     end
     callback(body, nil)
+  end)
+end
+
+local function assignment_jql(config)
+  local assigned = (config and config.assigned_popup) or {}
+  local jql = assigned.jql or "assignee = currentUser() AND resolution = Unresolved AND statusCategory != Done ORDER BY updated DESC"
+  return utils.trim(jql)
+end
+
+local function clamp_page_size(size)
+  local limit = tonumber(size) or 50
+  if limit < 1 then
+    return 1
+  end
+  if limit > 200 then
+    return 200
+  end
+  return limit
+end
+
+local function assignment_limit(config)
+  local assigned = (config and config.assigned_popup) or {}
+  return clamp_page_size(assigned.max_results)
+end
+
+local function issue_summary_entry(issue, base_url)
+  local fields = issue.fields or {}
+  if vim and vim.NIL then
+    if fields == vim.NIL then
+      fields = {}
+    end
+    if fields.summary == vim.NIL then
+      fields.summary = ""
+    end
+  end
+  local status = fields.status or {}
+  if vim and vim.NIL and status == vim.NIL then
+    status = {}
+  end
+  local status_name = status.name or status.displayName or ""
+  return {
+    key = issue.key,
+    summary = fields.summary or "",
+    status = status_name,
+    url = base_url ~= "" and string.format("%s/browse/%s", base_url, issue.key) or "",
+  }
+end
+
+local function map_assigned_issues(payload, base_url)
+  local issues = {}
+  local issue_list = payload.issues
+  if (vim and vim.NIL and issue_list == vim.NIL) or type(issue_list) ~= "table" then
+    return issues
+  end
+  for _, issue in ipairs(issue_list) do
+    local fields = issue.fields or {}
+    if vim and vim.NIL and fields == vim.NIL then
+      fields = {}
+    end
+    local status = fields.status or {}
+    if vim and vim.NIL and status == vim.NIL then
+      status = {}
+    end
+    local category = status.statusCategory or {}
+    if vim and vim.NIL and category == vim.NIL then
+      category = {}
+    end
+    local category_key = (category.key or category.name or ""):lower()
+    local resolution = fields.resolution
+    local resolved = resolution ~= nil and resolution ~= vim.NIL
+    local is_done = category_key == "done" or category_key == "complete"
+    if not resolved and not is_done then
+      table.insert(issues, issue_summary_entry(issue, base_url))
+    end
+  end
+  return issues
+end
+
+local function map_search_issues(payload, base_url)
+  local issues = {}
+  local issue_list = payload.issues
+  if (vim and vim.NIL and issue_list == vim.NIL) or type(issue_list) ~= "table" then
+    return issues
+  end
+  for _, issue in ipairs(issue_list) do
+    table.insert(issues, issue_summary_entry(issue, base_url))
+  end
+  return issues
+end
+
+function M.fetch_assigned_issues(config, opts, callback)
+  if type(opts) == "function" then
+    callback = opts
+    opts = {}
+  end
+  opts = opts or {}
+  local api_config = config.api or {}
+  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
+  if base_url == "" then
+    callback(nil, "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable.")
+    return
+  end
+  local auth, auth_err = utils.encode_basic_auth(api_config.email or vim.env.JIRA_API_EMAIL, api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY)
+  if not auth then
+    callback(nil, string.format("Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.", auth_err))
+    return
+  end
+
+  local endpoint_base = string.format("%s/rest/api/3/search/jql", base_url)
+  local jql = assignment_jql(config)
+  local limit = assignment_limit(config)
+  local start_at = math.max(0, tonumber(opts.start_at) or 0)
+  local fields = { "key", "summary", "status", "resolution" }
+  local encoded_jql = utils.url_encode(jql)
+  local encoded_fields = utils.url_encode(table.concat(fields, ","))
+  local query_string = string.format("jql=%s&maxResults=%d&startAt=%d&fields=%s", encoded_jql, limit, start_at, encoded_fields)
+  local max_get_query = 1800
+
+  local function decode_response(payload)
+    local ok, body = pcall(utils.json_decode, payload)
+    if not ok or type(body) ~= "table" then
+      callback(nil, "Jira returned a response that could not be parsed while listing your assigned issues.")
+      return
+    end
+    local issues = map_assigned_issues(body, base_url)
+    local response = {
+      issues = issues,
+      total = tonumber(body.total) or #issues,
+      start_at = tonumber(body.startAt) or start_at,
+      max_results = tonumber(body.maxResults) or limit,
+    }
+    callback(response, nil)
+  end
+
+  local function handle_error(err)
+    callback(nil, humanize_remote_error(err, "your assigned issues", { base_url = base_url, subject_label = "your assigned issues" }))
+  end
+
+  local function perform_post()
+    local payload = utils.json_encode({
+      jql = jql,
+      maxResults = limit,
+      startAt = start_at,
+      fields = fields,
+    })
+    run_command(build_post_args(endpoint_base, auth, payload), function(body, err)
+      if err then
+        handle_error(err)
+        return
+      end
+      decode_response(body)
+    end)
+  end
+
+  local function perform_get()
+    local endpoint = string.format("%s?%s", endpoint_base, query_string)
+    run_command(build_get_args(endpoint, auth), function(body, err)
+      if err then
+        local status = extract_http_status(err)
+        if status == 414 then
+          perform_post()
+          return
+        end
+        handle_error(err)
+        return
+      end
+      decode_response(body)
+    end)
+  end
+
+  if #query_string <= max_get_query then
+    perform_get()
+  else
+    perform_post()
+  end
+end
+
+function M.search_issues(config, params, callback)
+  params = params or {}
+  local jql = utils.trim(params.jql or "")
+  if jql == "" then
+    callback(nil, "A JQL query is required.")
+    return
+  end
+  local api_config = config.api or {}
+  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
+  if base_url == "" then
+    callback(nil, "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable.")
+    return
+  end
+  local auth, auth_err = utils.encode_basic_auth(api_config.email or vim.env.JIRA_API_EMAIL, api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY)
+  if not auth then
+    callback(nil, string.format("Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.", auth_err))
+    return
+  end
+  local start_at = math.max(0, tonumber(params.start_at) or 0)
+  local limit = clamp_page_size(params.max_results or (config.search_popup and config.search_popup.max_results) or 50)
+  local fields = params.fields or { "key", "summary", "status" }
+  local endpoint = string.format("%s/rest/api/3/search", base_url)
+  local payload = utils.json_encode({
+    jql = jql,
+    startAt = start_at,
+    maxResults = limit,
+    fields = fields,
+  })
+  run_command(build_post_args(endpoint, auth, payload), function(body, err)
+    if err then
+      callback(nil, humanize_remote_error(err, "your JQL search", { base_url = base_url, subject_label = string.format("JQL query (%s)", jql) }))
+      return
+    end
+    local ok, data = pcall(utils.json_decode, body)
+    if not ok or type(data) ~= "table" then
+      callback(nil, "Jira returned a response that could not be parsed while running your JQL search.")
+      return
+    end
+    local mapped = map_search_issues(data, base_url)
+    callback({
+      issues = mapped,
+      total = tonumber(data.total) or #mapped,
+      start_at = tonumber(data.startAt) or start_at,
+      max_results = tonumber(data.maxResults) or limit,
+      jql = jql,
+    }, nil)
   end)
 end
 
