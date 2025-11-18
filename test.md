@@ -19,7 +19,7 @@ The following synthetic Jira issues exercise every highlight used in the popup. 
 2. Verify the _summary title_, underline, and the new divider line render before the Description header.
 3. Confirm the _Details_ pane background spans the entire sidebar, regardless of line length.
 4. Check that the _URL/shortcut_ bar inherits the same background color, with both the URL row and navigation legend aligned.
-5. Confirm all panes now sit flush with the popup border, with the shortcut bar still aligned along the window edge.
+5. Ensure margin spacing keeps the content inset from the popup border while the shortcut bar now rests directly on the window edge.
 6. Review color-specific cases per issue:
    - SPL-101: timestamp, comment, and change highlights.
    - SPL-102 / SPL-105: priority & severity shades plus resolution row.
@@ -31,3 +31,5 @@ The following synthetic Jira issues exercise every highlight used in the popup. 
 
 - Populate comments and history entries so that both sections are rendered; otherwise summary/footer separators will still appear but the highlights above may be skipped.
 - When validating colors, check both focused and unfocused panes to ensure the `NormalNC` override keeps the detail and shortcut backgrounds consistent.
+
+SPL-283281 - test that the range of numbers are high enough

@@ -1085,6 +1085,22 @@ local function change_count(issue)
   return 0
 end
 
+local function normalize_assignee_display(value)
+  if vim and vim.NIL and value == vim.NIL then
+    return nil
+  end
+  if value == nil then
+    return nil
+  end
+  if type(value) == "string" then
+    return value
+  end
+  if type(value) == "number" then
+    return tostring(value)
+  end
+  return nil
+end
+
 local function assignee_history(issue)
   local histories = (issue.changelog and issue.changelog.histories) or {}
   local events = {}
@@ -1095,7 +1111,7 @@ local function assignee_history(issue)
       local field_name = (item.fieldId or item.field or ""):lower()
       if field_name:find("assignee") then
         sequence = sequence + 1
-        local assignee_name = item.toString or item.to or ""
+        local assignee_name = normalize_assignee_display(item.toString) or normalize_assignee_display(item.to)
         table.insert(events, {
           timestamp = timestamp,
           order = sequence,
@@ -1118,7 +1134,9 @@ local function assignee_history(issue)
   end
   if #ordered == 0 then
     local fields = issue.fields or {}
-    local fallback = fields.assignee and (fields.assignee.displayName or fields.assignee.name or fields.assignee.emailAddress)
+    local fallback = normalize_assignee_display(
+      fields.assignee and (fields.assignee.displayName or fields.assignee.name or fields.assignee.emailAddress)
+    )
     if fallback and fallback ~= "" then
       ordered = { fallback }
     end
@@ -1552,12 +1570,21 @@ end
 
 local function show_render_error(message)
   local buf = vim.api.nvim_create_buf(false, true)
-  local lines = {
-    "jira.nvim: failed to render issue popup",
-    tostring(message or "Unknown error"),
-    "",
-    "Press <Esc> or q to close",
-  }
+  local msg = message or "Unknown error"
+  local msg_lines
+  if type(msg) == "string" then
+    msg_lines = vim.split(msg, "\n", { plain = true })
+  else
+    msg_lines = { vim.inspect(msg) }
+  end
+  if #msg_lines == 0 then
+    msg_lines = { "Unknown error" }
+  end
+
+  local lines = { "jira.nvim: failed to render issue popup" }
+  vim.list_extend(lines, msg_lines)
+  table.insert(lines, "")
+  table.insert(lines, "Press <Esc> or q to close")
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
   vim.bo[buf].bufhidden = "wipe"
