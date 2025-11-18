@@ -33,3 +33,4 @@ The following synthetic Jira issues exercise every highlight used in the popup. 
 - When validating colors, check both focused and unfocused panes to ensure the `NormalNC` override keeps the detail and shortcut backgrounds consistent.
 
 SPL-283281 - test that the range of numbers are high enough
+https://www.google.com

@@ -80,7 +80,7 @@ Customize `assigned_popup` to tweak the keybinding, size, or number of issues re
 1. Make sure your env vars are exported before launching Neovim.
 2. Open any buffer that contains JIRA issue keys.
 3. The matches are underlined automatically. Place your cursor on one and press the configured keymap (default `<leader>ji`).
-4. Inspect the popup. Use `j`/`k`, `gg`, or `G` to move around; `/` plus `n`/`N` to search inside the popup; `Tab`/`<S-Tab>` to swap focus between the main pane, sidebar, and URL bar; `<C-n>`/`<C-p>` to jump to the next or previous issue match in the buffer; `o` to open the issue in a browser; `Esc` or `q` to close it.
+4. Inspect the popup. Use `j`/`k`, `gg`, or `G` to move around; `/` plus `n`/`N` to search inside the popup; `Tab`/`<S-Tab>` to swap focus between the main pane, sidebar, and URL bar; `<C-n>`/`<C-p>` to jump to the next or previous issue match in the buffer; `o` to open the issue in a browser; place the cursor on any URL and press `<CR>` or Cmd+click (macOS)/Ctrl+click (Windows) to open it; `Esc` or `q` to close it.
 5. Press `<leader>ja` to see unresolved issues assigned to you, or `<leader>js` to enter a JQL query and page through the matches. Use `j`/`k` (or `<S-N>/<S-P>`) to move through the list, `<CR>` to open an issue (the list stays open so you can come right back), `<C-f>/<C-b>` to change pages, and `q`/`Esc` to close the popup(s).
 
 ## Roadmap

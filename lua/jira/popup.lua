@@ -5,7 +5,8 @@ local Popup = {}
 local popup_ns = vim.api.nvim_create_namespace("jira.nvim.popup")
 local list_ns = vim.api.nvim_create_namespace("jira.nvim.popup.list")
 local popup_highlights_ready = false
-local nav_hint = "Nav: j/k scroll • gg top • G bottom • Tab/S-Tab switch panes • / search (n/N repeat) • <C-n>/<C-p> next/prev issue • q/Esc close • o open URL"
+local nav_hint = "Nav: j/k scroll • gg top • G bottom • Tab/S-Tab switch panes • / search (n/N repeat) • <C-n>/<C-p> next/prev issue • Enter/Cmd/Ctrl+Click open URL • q/Esc close • o open URL"
+local format_issue_url
 local user_highlight_cache = {}
 local user_highlight_counter = 0
 local catppuccin = {
@@ -423,6 +424,30 @@ local function add_issue_key_highlights(buf, lines, pattern, ignored_projects)
   end
 end
 
+local function sanitize_url_match(url)
+  if not url or url == "" then
+    return ""
+  end
+  local sanitized = url:gsub("[\"'`]+$", "")
+  local pairs = {
+    { "(", ")" },
+    { "[", "]" },
+    { "{", "}" },
+    { "<", ">" },
+  }
+  for _, pair in ipairs(pairs) do
+    local open_char, close_char = pair[1], pair[2]
+    local function count_char(str, char)
+      local _, count = str:gsub("%" .. char, "")
+      return count
+    end
+    while sanitized:sub(-1) == close_char and count_char(sanitized, close_char) > count_char(sanitized, open_char) do
+      sanitized = sanitized:sub(1, -2)
+    end
+  end
+  return sanitized
+end
+
 local function add_link_highlights(buf, lines)
   if not lines then
     return
@@ -434,10 +459,216 @@ local function add_link_highlights(buf, lines)
       if not s then
         break
       end
-      add_buffer_highlight(buf, "JiraPopupLink", idx - 1, s - 1, e)
+      local sanitized = sanitize_url_match(line:sub(s, e))
+      if sanitized and sanitized ~= "" then
+        add_buffer_highlight(buf, "JiraPopupLink", idx - 1, s - 1, s - 1 + #sanitized)
+      end
       start = e + 1
     end
   end
+end
+
+local function cursor_for_buffer(buf)
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return nil, nil
+  end
+  local mouse_win = vim.v.mouse_win
+  if mouse_win and mouse_win ~= 0 and vim.api.nvim_win_is_valid(mouse_win) and vim.api.nvim_win_get_buf(mouse_win) == buf then
+    local mouse_line = tonumber(vim.v.mouse_lnum)
+    local mouse_col = tonumber(vim.v.mouse_col)
+    if mouse_line and mouse_col then
+      return mouse_win, { mouse_line, math.max(0, mouse_col - 1) }
+    end
+  end
+  local win = vim.api.nvim_get_current_win()
+  if not win or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= buf then
+    win = vim.fn.bufwinid(buf)
+  end
+  if not win or win == -1 or not vim.api.nvim_win_is_valid(win) then
+    return nil, nil
+  end
+  return win, vim.api.nvim_win_get_cursor(win)
+end
+
+local function find_url_under_cursor(buf, cursor)
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return nil
+  end
+  if not cursor then
+    return nil
+  end
+  local line = vim.api.nvim_buf_get_lines(buf, cursor[1] - 1, cursor[1], false)[1] or ""
+  if line == "" then
+    return nil
+  end
+  local col = cursor[2] + 1
+  local first_url = nil
+  local start = 1
+  while true do
+    local s, e = line:find("https?://%S+", start)
+    if not s then
+      break
+    end
+    local sanitized = sanitize_url_match(line:sub(s, e))
+    if sanitized and sanitized ~= "" then
+      if not first_url then
+        first_url = sanitized
+      end
+      if col >= s and col <= e then
+        return sanitized
+      end
+    end
+    start = e + 1
+  end
+  if first_url then
+    return first_url
+  end
+  return nil
+end
+local function find_issue_key_under_cursor(buf, pattern, ignored_projects, cursor)
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return nil
+  end
+  if not cursor then
+    return nil
+  end
+  local line = vim.api.nvim_buf_get_lines(buf, cursor[1] - 1, cursor[1], false)[1] or ""
+  if line == "" then
+    return nil
+  end
+  if not pattern or pattern == "" then
+    return nil
+  end
+  pattern = pattern or "%u+-%d+"
+  local col = cursor[2] + 1
+  local first_match = nil
+  local start = 1
+  while true do
+    local s, e = line:find(pattern, start)
+    if not s then
+      break
+    end
+    local key = line:sub(s, e)
+    if not should_ignore_issue_key(key, ignored_projects) then
+      if not first_match then
+        first_match = key
+      end
+      if col >= s and col <= e then
+        return key
+      end
+    end
+    start = e + 1
+  end
+  return first_match
+end
+
+local function log_popup_event(event, payload)
+  local ok_path, path = pcall(function()
+    local info = debug.getinfo(1, "S")
+    if info and info.source and info.source:sub(1, 1) == "@" then
+      local script = info.source:sub(2)
+      if script and script ~= "" then
+        local root = vim.fn.fnamemodify(script, ":p:h:h:h")
+        if root ~= "" then
+          return root .. "/api_access.log"
+        end
+      end
+    end
+    return vim.fn.stdpath("cache") .. "/jira.nvim/api_access.log"
+  end)
+  if not ok_path or not path or path == "" then
+    return
+  end
+  local dir = vim.fn.fnamemodify(path, ":p:h")
+  if dir ~= "" then
+    pcall(vim.fn.mkdir, dir, "p")
+  end
+  local details = payload
+  if type(payload) == "table" then
+    local ok_inspect, inspected = pcall(vim.inspect, payload)
+    details = ok_inspect and inspected or tostring(payload)
+  elseif payload == nil then
+    details = ""
+  else
+    details = tostring(payload)
+  end
+  local ok_file, file = pcall(io.open, path, "a")
+  if not ok_file or not file then
+    return
+  end
+  file:write(string.format("[%s] %s: %s\n", os.date("%Y-%m-%d %H:%M:%S"), event, details))
+  file:close()
+end
+
+local function open_url_under_cursor(buf, config, trigger)
+  local _, cursor = cursor_for_buffer(buf)
+  if not cursor then
+    log_popup_event("OPEN_LINK_TRIGGER", {
+      trigger = trigger or "unknown",
+      buffer = buf,
+      cursor = cursor,
+      reason = "no_cursor",
+    })
+    return false
+  end
+  log_popup_event("OPEN_LINK_TRIGGER", {
+    trigger = trigger or "unknown",
+    buffer = buf,
+    cursor = cursor,
+  })
+  local url = find_url_under_cursor(buf, cursor)
+  if url and url ~= "" then
+    utils.open_url(url)
+    log_popup_event("OPEN_LINK_RESULT", {
+      trigger = trigger or "unknown",
+      buffer = buf,
+      cursor = cursor,
+      kind = "url",
+      value = url,
+      opened = true,
+    })
+    return true
+  end
+  local issue_key = find_issue_key_under_cursor(
+    buf,
+    config and config.issue_pattern,
+    config and config._ignored_project_map,
+    cursor
+  )
+  if issue_key and issue_key ~= "" then
+    local issue_url = format_issue_url and format_issue_url(issue_key, config) or ""
+    if issue_url == "" then
+      vim.notify("jira.nvim: Jira base URL is not configured; cannot open browser", vim.log.levels.WARN)
+      log_popup_event("OPEN_LINK_RESULT", {
+        trigger = trigger or "unknown",
+        buffer = buf,
+        cursor = cursor,
+        kind = "issue",
+        value = issue_key,
+        opened = false,
+        reason = "missing_base_url",
+      })
+      return false
+    end
+    utils.open_url(issue_url)
+    log_popup_event("OPEN_LINK_RESULT", {
+      trigger = trigger or "unknown",
+      buffer = buf,
+      cursor = cursor,
+      kind = "issue",
+      value = issue_key,
+      opened = true,
+    })
+    return true
+  end
+  log_popup_event("OPEN_LINK_RESULT", {
+    trigger = trigger or "unknown",
+    buffer = buf,
+    cursor = cursor,
+    opened = false,
+    reason = "no_match",
+  })
+  return false
 end
 
 local function apply_highlights(buf, lines, highlights, issue_pattern, ignored_projects)
@@ -453,6 +684,7 @@ local function apply_highlights(buf, lines, highlights, issue_pattern, ignored_p
 end
 
 local focus_group = vim.api.nvim_create_augroup("JiraPopupGuard", { clear = true })
+local size_group = vim.api.nvim_create_augroup("JiraPopupSizeGuard", { clear = true })
 local list_group = vim.api.nvim_create_augroup("JiraPopupList", { clear = true })
 
 local state = {
@@ -464,10 +696,12 @@ local state = {
   buffers = {},
   allowed_wins = {},
   focus_autocmd = nil,
+  size_autocmd = nil,
   last_focus = nil,
   navigation = nil,
   return_focus = nil,
   search = nil,
+  dimensions = nil,
 }
 
 local list_state = {
@@ -673,6 +907,88 @@ local function activate_focus_guard()
   })
 end
 
+local function clear_size_guard()
+  if state.size_autocmd then
+    pcall(vim.api.nvim_del_autocmd, state.size_autocmd)
+    state.size_autocmd = nil
+  end
+end
+local function clone_dimension_value(value)
+  if type(value) == "table" then
+    return vim.deepcopy(value)
+  end
+  return value
+end
+local function record_window_dimensions(win)
+  if not valid_win(win) then
+    return nil
+  end
+  local ok, cfg = pcall(vim.api.nvim_win_get_config, win)
+  if not ok or not cfg then
+    return nil
+  end
+  return {
+    width = cfg.width,
+    height = cfg.height,
+    row = clone_dimension_value(cfg.row),
+    col = clone_dimension_value(cfg.col),
+    relative = cfg.relative,
+    win = cfg.win,
+  }
+end
+
+local function enforce_window_dimensions(win, target)
+  if not target or not valid_win(win) then
+    return
+  end
+  local ok, cfg = pcall(vim.api.nvim_win_get_config, win)
+  if not ok or not cfg then
+    return
+  end
+  local updated = vim.deepcopy(cfg)
+  local changed = false
+  for _, key in ipairs({ "width", "height", "row", "col", "relative", "win" }) do
+    local desired = target[key]
+    if desired ~= nil and not vim.deep_equal(updated[key], desired) then
+      updated[key] = vim.deepcopy(desired)
+      changed = true
+    end
+  end
+  if changed then
+    pcall(vim.api.nvim_win_set_config, win, updated)
+  end
+end
+
+local function restore_window_dimensions()
+  if not state.dimensions then
+    return
+  end
+  for win, target in pairs(state.dimensions) do
+    enforce_window_dimensions(win, target)
+  end
+end
+
+local function activate_size_guard()
+  clear_size_guard()
+  if not state.dimensions then
+    return
+  end
+  state.size_autocmd = vim.api.nvim_create_autocmd({ "WinResized", "WinEnter" }, {
+    group = size_group,
+    callback = function(args)
+      if not valid_win(state.container_win) then
+        return
+      end
+      if args and args.win and state.dimensions[args.win] then
+        enforce_window_dimensions(args.win, state.dimensions[args.win])
+      else
+        restore_window_dimensions()
+      end
+    end,
+  })
+  restore_window_dimensions()
+end
+
 local function normalized_base_url(config)
   if config and config.api and config.api.base_url and config.api.base_url ~= "" then
     return (config.api.base_url or ""):gsub("/*$", "")
@@ -680,7 +996,7 @@ local function normalized_base_url(config)
   return (vim.env.JIRA_BASE_URL or ""):gsub("/*$", "")
 end
 
-local function format_issue_url(issue_key, config)
+format_issue_url = function(issue_key, config)
   if not issue_key or issue_key == "" then
     return ""
   end
@@ -693,7 +1009,7 @@ end
 
 local function popup_content_windows()
   local wins = {}
-  for _, win in ipairs({ state.main_win, state.sidebar_win }) do
+  for _, win in ipairs({ state.main_win, state.sidebar_win, state.url_win }) do
     if valid_win(win) then
       table.insert(wins, win)
     end
@@ -819,6 +1135,7 @@ end
 
 function Popup.close()
   clear_focus_guard()
+  clear_size_guard()
   close_window(state.main_win)
   close_window(state.sidebar_win)
   close_window(state.summary_win)
@@ -834,13 +1151,15 @@ function Popup.close()
     sidebar_win = nil,
     summary_win = nil,
     url_win = nil,
-  buffers = {},
-  allowed_wins = {},
-  focus_autocmd = nil,
-  last_focus = nil,
-  navigation = nil,
-  return_focus = nil,
-  search = nil,
+    buffers = {},
+    allowed_wins = {},
+    focus_autocmd = nil,
+    size_autocmd = nil,
+    last_focus = nil,
+    navigation = nil,
+    return_focus = nil,
+    search = nil,
+    dimensions = nil,
   }
   if return_focus and vim.api.nvim_win_is_valid(return_focus) then
     pcall(vim.api.nvim_set_current_win, return_focus)
@@ -1549,21 +1868,51 @@ local function map_popup_keys(buf, issue, config, nav_controls)
   local function focus_prev()
     focus_previous_popup_window(vim.api.nvim_get_current_win())
   end
+  local function open_link_at_cursor(trigger)
+    open_url_under_cursor(buf, config, trigger)
+  end
   vim.keymap.set("n", "q", close_popup, opts)
   vim.keymap.set("n", "<Esc>", close_popup, opts)
   vim.keymap.set("n", "o", open_in_browser, opts)
+  vim.keymap.set("n", "<CR>", function()
+    open_link_at_cursor("<CR>")
+  end, opts)
   vim.keymap.set("n", "/", search_popup, opts)
   vim.keymap.set("n", "n", repeat_search_forward, opts)
   vim.keymap.set("n", "N", repeat_search_backward, opts)
   vim.keymap.set("n", "<Tab>", focus_next, opts)
   vim.keymap.set("n", "<S-Tab>", focus_prev, opts)
+  if vim.fn.has("mac") == 1 then
+    vim.keymap.set("n", "<D-LeftMouse>", function()
+      open_link_at_cursor("<D-LeftMouse>")
+    end, opts)
+  end
+  vim.keymap.set("n", "<C-LeftMouse>", function()
+    open_link_at_cursor("<C-LeftMouse>")
+  end, opts)
   if nav_controls and nav_controls.next_issue then
     vim.keymap.set("n", "<C-n>", nav_controls.next_issue, opts)
   end
   if nav_controls and nav_controls.prev_issue then
     vim.keymap.set("n", "<C-p>", nav_controls.prev_issue, opts)
   end
-  for _, seq in ipairs({ "<C-w><Left>", "<C-w><Right>", "<C-w><Up>", "<C-w><Down>", "<C-w><", "<C-w>>", "<C-w>+", "<C-w>-", "<C-w>|", "<C-w>_" }) do
+  for _, seq in ipairs({
+    "<C-w><Left>",
+    "<C-w><Right>",
+    "<C-w><Up>",
+    "<C-w><Down>",
+    "<C-w><",
+    "<C-w>>",
+    "<C-w>+",
+    "<C-w>-",
+    "<C-w>|",
+    "<C-w>_",
+    "<C-w>=",
+    "<C-w>H",
+    "<C-w>L",
+    "<C-w>K",
+    "<C-w>J",
+  }) do
     vim.keymap.set("n", seq, function() end, opts)
   end
 end
@@ -1991,6 +2340,20 @@ function Popup.render(issue, config, context)
     lock_window_size(sidebar_win)
     lock_window_size(url_win)
 
+    state.dimensions = {}
+    for _, details in ipairs({
+      container_win,
+      summary_win,
+      main_win,
+      sidebar_win,
+      url_win,
+    }) do
+      local snapshot = record_window_dimensions(details)
+      if snapshot then
+        state.dimensions[details] = snapshot
+      end
+    end
+
     local fields = issue.fields or {}
     local status_name = fields.status and fields.status.name or "--"
     apply_statusline(main_win, status_name)
@@ -2003,6 +2366,7 @@ function Popup.render(issue, config, context)
     state.url_win = url_win
     state.buffers = { container_buf, summary_buf, main_buf, sidebar_buf, url_buf }
     update_allowed_wins()
+    activate_size_guard()
     activate_focus_guard()
     focus_window(main_win)
     created_bufs = {}
