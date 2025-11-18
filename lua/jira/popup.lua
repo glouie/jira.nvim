@@ -860,7 +860,7 @@ end
 
 local function update_allowed_wins()
   local allowed = {}
-  for _, win in ipairs({ state.main_win, state.sidebar_win, state.url_win }) do
+  for _, win in ipairs({ state.main_win, state.sidebar_win, state.summary_win, state.url_win }) do
     if valid_win(win) then
       table.insert(allowed, win)
     end
@@ -1009,7 +1009,7 @@ end
 
 local function popup_content_windows()
   local wins = {}
-  for _, win in ipairs({ state.main_win, state.sidebar_win, state.url_win }) do
+  for _, win in ipairs({ state.main_win, state.sidebar_win, state.summary_win, state.url_win }) do
     if valid_win(win) then
       table.insert(wins, win)
     end
