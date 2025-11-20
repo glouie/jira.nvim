@@ -686,6 +686,7 @@ end
 local focus_group = vim.api.nvim_create_augroup("JiraPopupGuard", { clear = true })
 local size_group = vim.api.nvim_create_augroup("JiraPopupSizeGuard", { clear = true })
 local list_group = vim.api.nvim_create_augroup("JiraPopupList", { clear = true })
+local yank_group = vim.api.nvim_create_augroup("JiraPopupYankFeedback", { clear = true })
 
 local state = {
   container_win = nil,
@@ -1840,6 +1841,23 @@ local function fill_buffer(buf, lines, opts)
   end
 end
 
+local function enable_yank_feedback(buf)
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+  if not (vim.highlight and vim.highlight.on_yank) then
+    return
+  end
+  vim.api.nvim_clear_autocmds({ group = yank_group, buffer = buf })
+  vim.api.nvim_create_autocmd("TextYankPost", {
+    group = yank_group,
+    buffer = buf,
+    callback = function()
+      vim.highlight.on_yank({ higroup = "IncSearch", timeout = 150 })
+    end,
+  })
+end
+
 local function map_popup_keys(buf, issue, config, nav_controls)
   local opts = { buffer = buf, nowait = true, silent = true }
   local function close_popup()
@@ -2261,9 +2279,15 @@ function Popup.render(issue, config, context)
     end
 
     -- Keymaps are set before rendering so Esc/q can close even if later steps fail.
+    map_popup_keys(summary_buf, issue, config, nav_controls)
     map_popup_keys(main_buf, issue, config, nav_controls)
     map_popup_keys(sidebar_buf, issue, config, nav_controls)
     map_popup_keys(url_buf, issue, config, nav_controls)
+
+    enable_yank_feedback(summary_buf)
+    enable_yank_feedback(main_buf)
+    enable_yank_feedback(sidebar_buf)
+    enable_yank_feedback(url_buf)
 
     fill_buffer(summary_buf, summary_lines)
     fill_buffer(main_buf, main_body_lines, { syntax = { "markdown", "markdown_inline" } })

@@ -4,6 +4,37 @@ local utils = require("jira.utils")
 
 local M = {}
 
+local function deepcopy(value, seen)
+  if vim.deepcopy then
+    return vim.deepcopy(value)
+  end
+  if type(value) ~= "table" then
+    return value
+  end
+  if seen and seen[value] then
+    return seen[value]
+  end
+  local shadow = {}
+  seen = seen or {}
+  seen[value] = shadow
+  for k, v in pairs(value) do
+    shadow[deepcopy(k, seen)] = deepcopy(v, seen)
+  end
+  return shadow
+end
+
+local function highlight_exists(name)
+  if vim.api.nvim_get_hl then
+    local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = name })
+    return ok and type(hl) == "table" and next(hl) ~= nil
+  end
+  if not vim.api.nvim_get_hl_by_name then
+    return false
+  end
+  local ok, hl = pcall(vim.api.nvim_get_hl_by_name, name, true)
+  return ok and type(hl) == "table" and next(hl) ~= nil
+end
+
 local default_config = {
   keymap = "<leader>ji",
   issue_pattern = "%u+-%d+",
@@ -36,7 +67,7 @@ local default_config = {
   },
 }
 
-local config = vim.deepcopy(default_config)
+local config = deepcopy(default_config)
 local ns = vim.api.nvim_create_namespace("jira.nvim")
 local group = vim.api.nvim_create_augroup("jira.nvim", { clear = true })
 local navigation_state
@@ -194,6 +225,9 @@ local function ensure_highlight()
   if ok then
     return
   end
+  if highlight_exists(config.highlight_group) then
+    return
+  end
   vim.api.nvim_set_hl(0, config.highlight_group, { underline = true })
 end
 
@@ -266,11 +300,11 @@ end
 
 function M.setup(opts)
   opts = opts or {}
-  config = vim.tbl_deep_extend("force", vim.deepcopy(default_config), opts)
-  config.api = vim.tbl_deep_extend("force", vim.deepcopy(default_config.api), opts.api or {})
-  config.popup = vim.tbl_deep_extend("force", vim.deepcopy(default_config.popup), opts.popup or {})
-  config.assigned_popup = vim.tbl_deep_extend("force", vim.deepcopy(default_config.assigned_popup), opts.assigned_popup or {})
-  config.search_popup = vim.tbl_deep_extend("force", vim.deepcopy(default_config.search_popup), opts.search_popup or {})
+  config = vim.tbl_deep_extend("force", deepcopy(default_config), opts)
+  config.api = vim.tbl_deep_extend("force", deepcopy(default_config.api), opts.api or {})
+  config.popup = vim.tbl_deep_extend("force", deepcopy(default_config.popup), opts.popup or {})
+  config.assigned_popup = vim.tbl_deep_extend("force", deepcopy(default_config.assigned_popup), opts.assigned_popup or {})
+  config.search_popup = vim.tbl_deep_extend("force", deepcopy(default_config.search_popup), opts.search_popup or {})
   rebuild_ignored_project_map()
   ensure_highlight()
   attach_autocmds()

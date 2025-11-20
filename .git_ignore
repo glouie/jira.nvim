@@ -1,0 +1,22 @@
+# Logs
+logs/
+*.log
+*.log.*
+
+# Runtime and cache artifacts
+tmp/
+temp/
+*.tmp
+*.bak
+*.cache
+*.pid
+*.pid.lock
+luac.out
+
+# Editor swap/backup files
+*.swp
+*.swo
+*.orig
+
+# macOS finder metadata
+.DS_Store
