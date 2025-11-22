@@ -267,10 +267,16 @@ local function append_section(target_lines, target_highlights, section_lines, se
 end
 
 local function user_display_and_status(user)
-  if not user then
+  if vim and vim.NIL and user == vim.NIL then
+    return nil, false
+  end
+  if not user or type(user) ~= "table" then
     return nil, false
   end
   local base = user.displayName or user.name or user.emailAddress
+  if base and type(base) ~= "string" then
+    base = tostring(base)
+  end
   if not base or base == "" then
     return nil, false
   end
@@ -694,6 +700,7 @@ local state = {
   sidebar_win = nil,
   summary_win = nil,
   url_win = nil,
+  help_win = nil,
   buffers = {},
   allowed_wins = {},
   focus_autocmd = nil,
@@ -861,9 +868,12 @@ end
 
 local function update_allowed_wins()
   local allowed = {}
-  for _, win in ipairs({ state.main_win, state.sidebar_win, state.summary_win, state.url_win }) do
+  for _, win in ipairs({ state.main_win, state.sidebar_win, state.summary_win, state.url_win, state.help_win }) do
     if valid_win(win) then
-      table.insert(allowed, win)
+      local ok, cfg = pcall(vim.api.nvim_win_get_config, win)
+      if win ~= state.help_win or not (ok and cfg and cfg.focusable == false) then
+        table.insert(allowed, win)
+      end
     end
   end
   state.allowed_wins = allowed
@@ -1010,9 +1020,12 @@ end
 
 local function popup_content_windows()
   local wins = {}
-  for _, win in ipairs({ state.main_win, state.sidebar_win, state.summary_win, state.url_win }) do
+  for _, win in ipairs({ state.main_win, state.sidebar_win, state.summary_win, state.url_win, state.help_win }) do
     if valid_win(win) then
-      table.insert(wins, win)
+      local ok, cfg = pcall(vim.api.nvim_win_get_config, win)
+      if win ~= state.help_win or not (ok and cfg and cfg.focusable == false) then
+        table.insert(wins, win)
+      end
     end
   end
   return wins
@@ -1141,6 +1154,7 @@ function Popup.close()
   close_window(state.sidebar_win)
   close_window(state.summary_win)
   close_window(state.url_win)
+  close_window(state.help_win)
   close_window(state.container_win)
   for _, buf in ipairs(state.buffers) do
     wipe_buffer(buf)
@@ -1152,6 +1166,7 @@ function Popup.close()
     sidebar_win = nil,
     summary_win = nil,
     url_win = nil,
+    help_win = nil,
     buffers = {},
     allowed_wins = {},
     focus_autocmd = nil,
@@ -1268,8 +1283,20 @@ local function format_issue_list_summary(pagination, issue_count)
     return string.format("%d issues", issue_count)
   end
   local total = tonumber(pagination.total)
-  local start_at = tonumber(pagination.start_at) or 0
   local page_size = tonumber(pagination.page_size or pagination.max_results or pagination.limit) or issue_count
+  local explicit_page = tonumber(pagination.page)
+  if explicit_page and explicit_page < 1 then
+    explicit_page = 1
+  end
+  local explicit_total_pages = tonumber(pagination.total_pages)
+  if explicit_total_pages and explicit_total_pages < 1 then
+    explicit_total_pages = nil
+  end
+  local start_at = tonumber(pagination.start_at)
+  if not start_at and explicit_page and page_size and page_size > 0 then
+    start_at = (explicit_page - 1) * page_size
+  end
+  start_at = math.max(0, start_at or 0)
   if not total or total <= 0 then
     return string.format("%d issues", issue_count)
   end
@@ -1279,10 +1306,16 @@ local function format_issue_list_summary(pagination, issue_count)
   local first = math.min(total, start_at + 1)
   local last = math.min(total, start_at + issue_count)
   local summary = string.format("Showing %d-%d of %d", first, last, total)
-  if page_size > 0 and total > page_size then
+  local page_label
+  if explicit_page and explicit_total_pages then
+    page_label = string.format("Page %d/%d", explicit_page, math.max(explicit_total_pages, explicit_page))
+  elseif page_size and page_size > 0 and total > page_size then
     local page = math.floor(start_at / page_size) + 1
     local total_pages = math.floor((total + page_size - 1) / page_size)
-    summary = string.format("%s • Page %d/%d", summary, page, math.max(total_pages, 1))
+    page_label = string.format("Page %d/%d", page, math.max(total_pages, 1))
+  end
+  if page_label then
+    summary = string.format("%s • %s", summary, page_label)
   end
   return summary
 end
@@ -1771,9 +1804,21 @@ local function url_bar_lines(issue, config, width)
   highlight_label_portion(highlights, #lines - 1, label)
   local value_start = #label + 2
   add_highlight_entry(highlights, "JiraPopupLink", #lines - 1, value_start, value_start + #url_value)
-  local legend_line = nav_hint
-  table.insert(lines, legend_line)
-  highlight_full_line(highlights, "JiraPopupUrlBar", #lines - 1, legend_line)
+  return lines, highlights
+end
+
+local function help_bar_lines(width)
+  local lines = {}
+  local highlights = {}
+  local wrap_width = math.max(20, width or 20)
+  for _, line in ipairs(utils.wrap_text(nav_hint, wrap_width)) do
+    table.insert(lines, line)
+    highlight_full_line(highlights, "JiraPopupUrlBar", #lines - 1, line)
+  end
+  if #lines == 0 then
+    table.insert(lines, nav_hint)
+    highlight_full_line(highlights, "JiraPopupUrlBar", 0, nav_hint)
+  end
   return lines, highlights
 end
 
@@ -2180,11 +2225,9 @@ function Popup.render(issue, config, context)
     local dims = calculate_dimensions(config)
     local pane_gap = 2
     local vertical_gap = 0
-    local url_bar_height = 2
     local min_inner_width = 56
     local min_content_height = 8
     local inner_width = math.max(min_inner_width, dims.width)
-    local content_height = math.max(min_content_height, dims.height - url_bar_height - vertical_gap)
     local summary_margin_left = 1
     local main_margin_left = 1
     local sidebar_margin_left = 1
@@ -2240,15 +2283,21 @@ function Popup.render(issue, config, context)
     local main_buf = vim.api.nvim_create_buf(false, true)
     local sidebar_buf = vim.api.nvim_create_buf(false, true)
     local url_buf = vim.api.nvim_create_buf(false, true)
+    local help_buf = vim.api.nvim_create_buf(false, true)
     track_buf(summary_buf)
     track_buf(main_buf)
     track_buf(sidebar_buf)
     track_buf(url_buf)
+    track_buf(help_buf)
 
     local main_content, main_highlights = main_lines(issue, math.max(20, main_width_with_margin - 1), config)
     local sidebar_content, sidebar_highlights = sidebar_lines(issue, math.max(20, sidebar_width_with_margin - 1))
     local url_content, url_highlights = url_bar_lines(issue, config, url_width)
+    local help_content, help_highlights = help_bar_lines(url_width)
     local summary_lines, summary_highlights = summary_bar_lines(issue, summary_width)
+    local url_bar_height = math.max(1, #url_content)
+    local help_bar_height = math.max(1, #help_content)
+    local content_height = math.max(min_content_height, dims.height - url_bar_height - help_bar_height - vertical_gap)
     local summary_line_count = math.min(#main_content, 2)
     local main_body_lines = {}
     local main_body_highlights = {}
@@ -2283,22 +2332,26 @@ function Popup.render(issue, config, context)
     map_popup_keys(main_buf, issue, config, nav_controls)
     map_popup_keys(sidebar_buf, issue, config, nav_controls)
     map_popup_keys(url_buf, issue, config, nav_controls)
+    map_popup_keys(help_buf, issue, config, nav_controls)
 
     enable_yank_feedback(summary_buf)
     enable_yank_feedback(main_buf)
     enable_yank_feedback(sidebar_buf)
     enable_yank_feedback(url_buf)
+    enable_yank_feedback(help_buf)
 
     fill_buffer(summary_buf, summary_lines)
     fill_buffer(main_buf, main_body_lines, { syntax = { "markdown", "markdown_inline" } })
     fill_buffer(sidebar_buf, sidebar_content)
     fill_buffer(url_buf, url_content)
+    fill_buffer(help_buf, help_content)
 
     local ignored_projects = config._ignored_project_map
     apply_highlights(summary_buf, summary_lines, summary_highlights, config.issue_pattern, ignored_projects)
     apply_highlights(main_buf, main_body_lines, main_body_highlights, config.issue_pattern, ignored_projects)
     apply_highlights(sidebar_buf, sidebar_content, sidebar_highlights, config.issue_pattern, ignored_projects)
     apply_highlights(url_buf, url_content, url_highlights, config.issue_pattern, ignored_projects)
+    apply_highlights(help_buf, help_content, help_highlights, config.issue_pattern, ignored_projects)
 
     local summary_win = vim.api.nvim_open_win(summary_buf, false, {
       relative = "win",
@@ -2359,10 +2412,27 @@ function Popup.render(issue, config, context)
     vim.api.nvim_win_set_option(url_win, "conceallevel", 0)
     vim.api.nvim_win_set_option(url_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
 
+    local help_win = vim.api.nvim_open_win(help_buf, false, {
+      relative = "win",
+      win = container_win,
+      width = url_width,
+      height = help_bar_height,
+      col = url_margin_left,
+      row = content_height + vertical_gap + url_bar_height,
+      style = "minimal",
+      border = "none",
+      zindex = 60,
+      focusable = false,
+    })
+    track_win(help_win)
+    vim.api.nvim_win_set_option(help_win, "conceallevel", 0)
+    vim.api.nvim_win_set_option(help_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
+
     lock_window_size(summary_win)
     lock_window_size(main_win)
     lock_window_size(sidebar_win)
     lock_window_size(url_win)
+    lock_window_size(help_win)
 
     state.dimensions = {}
     for _, details in ipairs({
@@ -2371,6 +2441,7 @@ function Popup.render(issue, config, context)
       main_win,
       sidebar_win,
       url_win,
+      help_win,
     }) do
       local snapshot = record_window_dimensions(details)
       if snapshot then
@@ -2388,7 +2459,8 @@ function Popup.render(issue, config, context)
     state.sidebar_win = sidebar_win
     state.summary_win = summary_win
     state.url_win = url_win
-    state.buffers = { container_buf, summary_buf, main_buf, sidebar_buf, url_buf }
+    state.help_win = help_win
+    state.buffers = { container_buf, summary_buf, main_buf, sidebar_buf, url_buf, help_buf }
     update_allowed_wins()
     activate_size_guard()
     activate_focus_guard()

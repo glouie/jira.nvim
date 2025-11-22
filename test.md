@@ -34,3 +34,5 @@ The following synthetic Jira issues exercise every highlight used in the popup. 
 
 SPL-283281 - test that the range of numbers are high enough
 https://www.google.com
+
+project = SPL and issuetype = Bug and assignee in (currentUser())

@@ -10,7 +10,7 @@ A lightweight Neovim companion for browsing Atlassian JIRA issues without leavin
 - Press `o` inside the popup to jump to the issue in your browser, or `Esc`/`q` to close it.
 - Popups support `/` search, `n`/`N` to repeat, `Tab`/`<S-Tab>` to swap panes, and `<C-n>`/`<C-p>` to hop between other issue matches in the buffer without leaving the view.
 - `<leader>ja` shows a quick table of unresolved issues assigned to you so you can jump straight into the one you care about.
-- `<leader>js` prompts for a JQL query and displays the matching issues with paging controls and totals.
+- `<leader>js` opens a highlighted JQL prompt with inline help and server-backed suggestions, then displays the matching issues with paging controls and totals.
 - Uses your Atlassian Cloud API token, sourced from environment variables, so credentials never touch the repo.
 
 ## Installation
@@ -82,6 +82,8 @@ Customize `assigned_popup` to tweak the keybinding, size, or number of issues re
 3. The matches are underlined automatically. Place your cursor on one and press the configured keymap (default `<leader>ji`).
 4. Inspect the popup. Use `j`/`k`, `gg`, or `G` to move around; `/` plus `n`/`N` to search inside the popup; `Tab`/`<S-Tab>` to swap focus between the main pane, sidebar, and URL bar; `<C-n>`/`<C-p>` to jump to the next or previous issue match in the buffer; `o` to open the issue in a browser; place the cursor on any URL and press `<CR>` or Cmd+click (macOS)/Ctrl+click (Windows) to open it; `Esc` or `q` to close it.
 5. Press `<leader>ja` to see unresolved issues assigned to you, or `<leader>js` to enter a JQL query and page through the matches. Use `j`/`k` (or `<S-N>/<S-P>`) to move through the list, `<CR>` to open an issue (the list stays open so you can come right back), `<C-f>/<C-b>` to change pages, and `q`/`Esc` to close the popup(s).
+
+Inside the JQL prompt, `Esc` drops you into Normal mode so you can edit/yank/clear text with your usual motions. Submit with `<CR>` or `<C-y>`, navigate completion items with `<C-n>/<C-p>`, and exit with `<C-c>` (insert or normal) or `q` (normal).
 
 ## Roadmap
 

@@ -1,6 +1,7 @@
 local api = require("jira.api")
 local popup = require("jira.popup")
 local utils = require("jira.utils")
+local jql_prompt = require("jira.jql_prompt")
 
 local M = {}
 
@@ -33,6 +34,14 @@ local function highlight_exists(name)
   end
   local ok, hl = pcall(vim.api.nvim_get_hl_by_name, name, true)
   return ok and type(hl) == "table" and next(hl) ~= nil
+end
+
+local function collapse_jql_single_line(jql)
+  if not jql or jql == "" then
+    return ""
+  end
+  local collapsed = tostring(jql):gsub("[%s\r\n]+", " ")
+  return utils.trim(collapsed)
 end
 
 local default_config = {
@@ -436,11 +445,16 @@ local function render_assigned_page(start_at)
   end)
 end
 
-local function render_jql_page(jql, start_at)
+local function render_jql_page(jql, opts)
+  opts = opts or {}
+  local page_state = opts.page_state or { tokens = { [1] = opts.next_page_token } }
+  local page_number = opts.page or 1
+  local page_tokens = page_state.tokens or {}
+  local active_token = page_tokens[page_number]
   api.search_issues(config, {
     jql = jql,
-    start_at = start_at,
     max_results = config.search_popup and config.search_popup.max_results,
+    next_page_token = active_token,
   }, function(result, err)
     vim.schedule(function()
       if err then
@@ -450,32 +464,50 @@ local function render_jql_page(jql, start_at)
       result = result or {}
       local issues = result.issues or {}
       local page_size = math.max(1, tonumber(result.max_results) or (config.search_popup and config.search_popup.max_results) or 50)
-      local start_idx = math.max(0, tonumber(result.start_at) or start_at or 0)
+      local start_idx = tonumber(result.start_at)
+      if not start_idx then
+        start_idx = (page_number - 1) * page_size
+      else
+        start_idx = math.max(0, start_idx)
+      end
       local total = tonumber(result.total)
       if not total or total <= 0 then
         total = start_idx + #issues
+      end
+      local total_pages
+      if page_size > 0 and total > 0 then
+        total_pages = math.floor((total + page_size - 1) / page_size)
       end
       local pagination = {
         total = total,
         start_at = start_idx,
         page_size = page_size,
+        page = page_number,
+        total_pages = total_pages or page_number,
       }
-      local has_prev = start_idx > 0
-      local has_next = (#issues == page_size) and ((not result.total) or (start_idx + #issues < result.total))
       local handlers = {}
-      if has_next then
+      local next_token = result.next_page_token
+      if next_token and next_token ~= "" then
         handlers.next_page = function()
-          render_jql_page(jql, start_idx + page_size)
+          page_state.tokens = page_state.tokens or {}
+          page_state.tokens[page_number + 1] = next_token
+          render_jql_page(jql, {
+            page = page_number + 1,
+            page_state = page_state,
+          })
         end
       end
-      if has_prev then
+      if page_number > 1 then
         handlers.prev_page = function()
-          render_jql_page(jql, math.max(0, start_idx - page_size))
+          render_jql_page(jql, {
+            page = page_number - 1,
+            page_state = page_state,
+          })
         end
       end
       popup.render_issue_list(issues, config, {
         title = "JQL Search",
-        empty_message = string.format("No issues match JQL: %s", jql),
+        empty_message = string.format("No issues match JQL: %s", collapse_jql_single_line(jql)),
         pagination = pagination,
         pagination_handlers = handlers,
         layout = config.search_popup,
@@ -492,20 +524,39 @@ end
 
 function M.open_jql_search()
   local default_query = last_jql_query or ""
+  local help = "Example: project = ABC AND status in ('In Progress', 'To Do') ORDER BY updated DESC"
   local function submit(input)
     local query = utils.trim(input or "")
     if query == "" then
       return
     end
-    last_jql_query = query
-    render_jql_page(query, 0)
+    last_jql_query = input or query
+    render_jql_page(query)
   end
-  if vim.ui and vim.ui.input then
-    vim.ui.input({ prompt = "JQL query: ", default = default_query }, submit)
-  else
-    local ok, value = pcall(vim.fn.input, "JQL query: ", default_query)
-    if ok then
-      submit(value)
+  local ok = jql_prompt.open({
+    default = default_query,
+    help = help,
+    config = config,
+    on_submit = submit,
+    on_change = function(value)
+      if value ~= nil then
+        last_jql_query = value
+      end
+    end,
+    on_close = function(value)
+      if value ~= nil then
+        last_jql_query = value
+      end
+    end,
+  })
+  if not ok then
+    if vim.ui and vim.ui.input then
+      vim.ui.input({ prompt = "JQL query: ", default = default_query }, submit)
+    else
+      local ok_input, value = pcall(vim.fn.input, "JQL query: ", default_query)
+      if ok_input then
+        submit(value)
+      end
     end
   end
 end
