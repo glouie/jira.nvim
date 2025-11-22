@@ -471,10 +471,6 @@ function M.fetch_assigned_issues(config, opts, callback)
   local limit = assignment_limit(config)
   local start_at = math.max(0, tonumber(opts.start_at) or 0)
   local fields = { "key", "summary", "status", "resolution" }
-  local encoded_jql = utils.url_encode(jql)
-  local encoded_fields = utils.url_encode(table.concat(fields, ","))
-  local query_string = string.format("jql=%s&maxResults=%d&startAt=%d&fields=%s", encoded_jql, limit, start_at, encoded_fields)
-  local max_get_query = 1800
 
   local function decode_response(payload)
     local ok, body = pcall(utils.json_decode, payload)
@@ -497,12 +493,15 @@ function M.fetch_assigned_issues(config, opts, callback)
   end
 
   local function perform_post()
-    local payload = utils.json_encode({
+    local payload_table = {
       jql = jql,
       maxResults = limit,
-      startAt = start_at,
       fields = fields,
-    })
+    }
+    if start_at > 0 then
+      payload_table.startAt = start_at
+    end
+    local payload = utils.json_encode(payload_table)
     run_command(build_post_args(endpoint_base, auth, payload), function(body, err)
       if err then
         handle_error(err)
@@ -512,27 +511,7 @@ function M.fetch_assigned_issues(config, opts, callback)
     end)
   end
 
-  local function perform_get()
-    local endpoint = string.format("%s?%s", endpoint_base, query_string)
-    run_command(build_get_args(endpoint, auth), function(body, err)
-      if err then
-        local status = extract_http_status(err)
-        if status == 414 then
-          perform_post()
-          return
-        end
-        handle_error(err)
-        return
-      end
-      decode_response(body)
-    end)
-  end
-
-  if #query_string <= max_get_query then
-    perform_get()
-  else
-    perform_post()
-  end
+  perform_post()
 end
 
 function M.search_issues(config, params, callback)
@@ -556,13 +535,16 @@ function M.search_issues(config, params, callback)
   local start_at = math.max(0, tonumber(params.start_at) or 0)
   local limit = clamp_page_size(params.max_results or (config.search_popup and config.search_popup.max_results) or 50)
   local fields = params.fields or { "key", "summary", "status" }
-  local endpoint = string.format("%s/rest/api/3/search", base_url)
-  local payload = utils.json_encode({
+  local endpoint = string.format("%s/rest/api/3/search/jql", base_url)
+  local payload_table = {
     jql = jql,
-    startAt = start_at,
     maxResults = limit,
     fields = fields,
-  })
+  }
+  if start_at > 0 then
+    payload_table.startAt = start_at
+  end
+  local payload = utils.json_encode(payload_table)
   run_command(build_post_args(endpoint, auth, payload), function(body, err)
     if err then
       callback(nil, humanize_remote_error(err, "your JQL search", { base_url = base_url, subject_label = string.format("JQL query (%s)", jql) }))
