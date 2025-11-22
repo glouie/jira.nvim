@@ -1487,9 +1487,18 @@ local function assignee_history(issue)
   end
   if #ordered == 0 then
     local fields = issue.fields or {}
-    local fallback = normalize_assignee_display(
-      fields.assignee and (fields.assignee.displayName or fields.assignee.name or fields.assignee.emailAddress)
-    )
+    local assignee_field = fields.assignee
+    if vim and vim.NIL and assignee_field == vim.NIL then
+      assignee_field = nil
+    end
+    local fallback
+    if type(assignee_field) == "table" then
+      fallback = normalize_assignee_display(
+        assignee_field.displayName or assignee_field.name or assignee_field.emailAddress
+      )
+    else
+      fallback = normalize_assignee_display(assignee_field)
+    end
     if fallback and fallback ~= "" then
       ordered = { fallback }
     end

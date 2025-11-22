@@ -103,7 +103,7 @@ vim.system = function(args, _, on_exit)
   local method = detect_arg(args, "-X") or args[5]
   local body = detect_arg(args, "-d") or args[#args - 1]
   local response
-  if method == "POST" and endpoint:find("/rest/api/3/search", 1, true) then
+  if method == "POST" and endpoint:find("/rest/api/3/search/jql", 1, true) then
     response = { code = 0, stdout = success_body, stderr = "" }
   else
     response = { code = 56, stdout = "", stderr = "curl: (56) Unexpected search request" }
@@ -135,9 +135,9 @@ assert(result and result.total == 1, "expected parsed search payload")
 assert(result.next_page_token == "next-token", "expected next page token from search response")
 assert(#captured_calls == 1, "expected single POST Jira search")
 assert(captured_calls[1].method == "POST", "expected POST search request")
-assert(captured_calls[1].url:find("/rest/api/3/search", 1, true), "expected /rest/api/3/search endpoint")
+assert(captured_calls[1].url:find("/rest/api/3/search/jql", 1, true), "expected /rest/api/3/search/jql endpoint")
 assert(captured_calls[1].body == [[{"jql":"project = TNT","maxResults":50,"fields":["key","summary","status"],"nextPageToken":"prev-token"}]], "unexpected search payload: " .. tostring(captured_calls[1].body))
 
 _G.vim = original_vim
 io.open = original_io_open
-print("ok\tjira.api.search_issues posts JSON body to /search")
+print("ok\tjira.api.search_issues posts JSON body to /search/jql")
