@@ -1,3 +1,6 @@
+---Core entrypoint for jira.nvim.
+-- Handles configuration, keymaps, highlighting, navigation, and popup orchestration.
+
 local api = require("jira.api")
 local popup = require("jira.popup")
 local utils = require("jira.utils")
@@ -5,6 +8,10 @@ local jql_prompt = require("jira.jql_prompt")
 
 local M = {}
 
+---Deep copy a Lua value without relying on vim.deepcopy on older versions.
+---@param value any Value to clone.
+---@param seen table|nil Tracking table for circular references.
+---@return any clone Copied value.
 local function deepcopy(value, seen)
   if vim.deepcopy then
     return vim.deepcopy(value)
@@ -24,6 +31,9 @@ local function deepcopy(value, seen)
   return shadow
 end
 
+---Check whether a highlight group exists.
+---@param name string Highlight group name.
+---@return boolean exists True if the highlight group is defined.
 local function highlight_exists(name)
   if vim.api.nvim_get_hl then
     local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = name })
@@ -36,6 +46,9 @@ local function highlight_exists(name)
   return ok and type(hl) == "table" and next(hl) ~= nil
 end
 
+---Collapse a potentially multi-line JQL string into a trimmed single line.
+---@param jql string|nil Raw JQL text.
+---@return string collapsed Single-line trimmed JQL.
 local function collapse_jql_single_line(jql)
   if not jql or jql == "" then
     return ""
@@ -82,6 +95,9 @@ local group = vim.api.nvim_create_augroup("jira.nvim", { clear = true })
 local navigation_state
 local move_navigation
 local last_jql_query
+
+---Rebuild a lookup map for ignored project keys from config.
+---@return nil
 local function rebuild_ignored_project_map()
   local map = {}
   for _, project in ipairs(config.ignored_projects or {}) do
@@ -94,6 +110,9 @@ end
 
 rebuild_ignored_project_map()
 
+---Determine whether an issue key should be ignored based on configuration.
+---@param issue_key string|nil Issue key such as "ABC-123".
+---@return boolean ignore True when the issue belongs to an ignored project.
 local function should_ignore_issue_key(issue_key)
   if not issue_key or issue_key == "" then
     return false
@@ -109,6 +128,9 @@ local function should_ignore_issue_key(issue_key)
   return map[project:upper()] == true
 end
 
+---Collect all Jira issue keys present in a buffer.
+---@param bufnr number Buffer handle.
+---@return table issues List of tables containing `key` fields.
 local function collect_buffer_issues(bufnr)
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
     return {}
@@ -138,6 +160,10 @@ local function collect_buffer_issues(bufnr)
   return issues
 end
 
+---Find the index of a specific issue key in a list of issues.
+---@param issues table List of issue entries with `key`.
+---@param issue_key string Issue key to find.
+---@return integer|nil index Position in the list or nil.
 local function issue_index(issues, issue_key)
   if not issues or not issue_key or issue_key == "" then
     return nil
@@ -150,6 +176,10 @@ local function issue_index(issues, issue_key)
   return nil
 end
 
+---Build navigation state from a buffer and optional active issue.
+---@param bufnr number Buffer handle.
+---@param issue_key string|nil Issue key to anchor navigation.
+---@return table|nil nav Navigation state or nil when no issues found.
 local function update_navigation_from_buffer(bufnr, issue_key)
   local issues = collect_buffer_issues(bufnr)
   if issue_key and issue_key ~= "" then
@@ -175,6 +205,8 @@ local function update_navigation_from_buffer(bufnr, issue_key)
   return navigation_state
 end
 
+---Create a navigation payload describing previous/next issue availability.
+---@return table|nil nav Navigation helpers for the popup, or nil when not available.
 local function navigation_payload()
   local nav = navigation_state
   if not nav or not nav.issues or not nav.index then
@@ -208,6 +240,9 @@ local function navigation_payload()
   return payload
 end
 
+---Move the issue navigation pointer and open the target issue.
+---@param delta integer Direction to move (+1 next, -1 previous).
+---@return nil
 move_navigation = function(delta)
   local nav = navigation_state
   if not nav or not nav.issues then
@@ -229,6 +264,8 @@ move_navigation = function(delta)
   M.open_issue(entry.key, { navigation = nav })
 end
 
+---Ensure the configured highlight group exists, creating a default style if missing.
+---@return nil
 local function ensure_highlight()
   local ok = pcall(vim.api.nvim_get_hl, 0, { name = config.highlight_group })
   if ok then
@@ -240,6 +277,10 @@ local function ensure_highlight()
   vim.api.nvim_set_hl(0, config.highlight_group, { underline = true })
 end
 
+---Find an issue key on a line that covers the given column.
+---@param line string Line text.
+---@param col number 0-based column index.
+---@return string|nil issue_key Issue under the cursor or nil.
 local function scan_line(line, col)
   local pattern = config.issue_pattern
   local start = 1
@@ -257,6 +298,9 @@ local function scan_line(line, col)
   return nil
 end
 
+---Apply highlights for issue keys in a buffer.
+---@param bufnr number Buffer handle.
+---@return nil
 local function highlight_buffer(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_buf_is_loaded(bufnr) then
     return
@@ -285,6 +329,9 @@ local function highlight_buffer(bufnr)
   end
 end
 
+---Schedule highlighting work on the main loop.
+---@param buf number Buffer handle.
+---@return nil
 local function schedule_highlight(buf)
   vim.schedule(function()
     if vim.api.nvim_buf_is_valid(buf) then
@@ -293,6 +340,8 @@ local function schedule_highlight(buf)
   end)
 end
 
+---Create autocmds that keep issue highlighting up to date.
+---@return nil
 local function attach_autocmds()
   vim.api.nvim_clear_autocmds({ group = group })
   vim.api.nvim_create_autocmd({ "BufEnter", "TextChanged", "InsertLeave", "BufWritePost" }, {
@@ -303,10 +352,15 @@ local function attach_autocmds()
   })
 end
 
+---Return the current effective configuration table.
+---@return table config Merged user and default configuration.
 function M.get_config()
   return config
 end
 
+---Configure jira.nvim, set keymaps, and attach highlighting autocmds.
+---@param opts table|nil User configuration overrides.
+---@return nil
 function M.setup(opts)
   opts = opts or {}
   config = vim.tbl_deep_extend("force", deepcopy(default_config), opts)
@@ -337,12 +391,18 @@ function M.setup(opts)
   highlight_buffer(vim.api.nvim_get_current_buf())
 end
 
+---Find an issue key under the current cursor position.
+---@return string|nil issue_key Matching issue key or nil when none is found.
 function M.find_issue_under_cursor()
   local cursor = vim.api.nvim_win_get_cursor(0)
   local line = vim.api.nvim_get_current_line()
   return scan_line(line, cursor[2])
 end
 
+---Open a popup for the given issue key.
+---@param issue_key string Issue key such as "ABC-123".
+---@param opts table|nil Options like navigation context and whether to return focus.
+---@return nil
 function M.open_issue(issue_key, opts)
   if not issue_key or issue_key == "" then
     vim.notify("jira.nvim: missing issue key", vim.log.levels.WARN)
@@ -374,6 +434,8 @@ function M.open_issue(issue_key, opts)
   end)
 end
 
+---Open the issue popup for the key located under the cursor.
+---@return nil
 function M.open_issue_under_cursor()
   local issue = M.find_issue_under_cursor()
   if not issue then
@@ -385,10 +447,17 @@ function M.open_issue_under_cursor()
   M.open_issue(issue, { navigation = nav })
 end
 
+---Re-run highlighting for Jira issue keys in the target buffer.
+---@param bufnr number|nil Buffer handle; defaults to current buffer.
+---@return nil
 function M.refresh(bufnr)
   highlight_buffer(bufnr or vim.api.nvim_get_current_buf())
 end
 
+---Open an issue from a list selection, preserving focus where possible.
+---@param issue table|nil Issue entry with `key`.
+---@param ctx table|nil Context containing originating window.
+---@return nil
 local function open_issue_from_list(issue, ctx)
   if not issue or not issue.key then
     return
@@ -401,6 +470,9 @@ local function open_issue_from_list(issue, ctx)
   end
 end
 
+---Render the assigned issues popup page for a given offset.
+---@param start_at number Starting index for pagination.
+---@return nil
 local function render_assigned_page(start_at)
   api.fetch_assigned_issues(config, { start_at = start_at }, function(result, err)
     vim.schedule(function()
@@ -445,6 +517,10 @@ local function render_assigned_page(start_at)
   end)
 end
 
+---Render a JQL search popup for the specified query and page options.
+---@param jql string JQL query string.
+---@param opts table|nil Pagination state and next page tokens.
+---@return nil
 local function render_jql_page(jql, opts)
   opts = opts or {}
   local page_state = opts.page_state or { tokens = { [1] = opts.next_page_token } }
@@ -518,10 +594,14 @@ local function render_jql_page(jql, opts)
   end)
 end
 
+---Open a popup showing unresolved issues assigned to the current user.
+---@return nil
 function M.open_assigned_issues()
   render_assigned_page(0)
 end
 
+---Open an interactive JQL prompt and render results in a popup.
+---@return nil
 function M.open_jql_search()
   local default_query = last_jql_query or ""
   local help = "Example: project = ABC AND status in ('In Progress', 'To Do') ORDER BY updated DESC"

@@ -1,3 +1,6 @@
+---Popup rendering utilities for jira.nvim.
+-- Responsible for building floating windows, highlights, and issue list/detail layouts.
+
 local utils = require("jira.utils")
 
 local Popup = {}
@@ -117,6 +120,8 @@ local severity_rules = {
 }
 local fill_buffer
 
+---Initialize highlight groups used across popup buffers.
+---@return nil
 local function ensure_popup_highlights()
   if popup_highlights_ready then
     return
@@ -265,6 +270,13 @@ local function ensure_popup_highlights()
   popup_highlights_ready = true
 end
 
+---Store a highlight entry if the provided range is valid.
+---@param store table Table collecting highlight entries.
+---@param group string Highlight group name.
+---@param line number 0-based line index.
+---@param start_col number Start column (0-based).
+---@param end_col number End column (0-based, exclusive).
+---@return nil
 local function add_highlight_entry(store, group, line, start_col, end_col)
   if not store or not group then
     return
@@ -283,6 +295,11 @@ local function add_highlight_entry(store, group, line, start_col, end_col)
   })
 end
 
+---Highlight the label portion at the start of a line.
+---@param store table Highlight accumulator.
+---@param line number Line index.
+---@param label string Label text.
+---@return nil
 local function highlight_label_portion(store, line, label)
   if not store or not label or label == "" then
     return
@@ -290,6 +307,12 @@ local function highlight_label_portion(store, line, label)
   add_highlight_entry(store, "JiraPopupLabel", line, 0, #label + 1)
 end
 
+---Highlight an entire line with a given group.
+---@param store table Highlight accumulator.
+---@param group string Highlight group name.
+---@param line number Line index.
+---@param text string Line content.
+---@return nil
 local function highlight_full_line(store, group, line, text)
   if not store or not group or not text or text == "" then
     return
@@ -297,6 +320,11 @@ local function highlight_full_line(store, group, line, text)
   add_highlight_entry(store, group, line, 0, #text)
 end
 
+---Build shortcut bar lines and highlight metadata for a section.
+---@param section_key string Section identifier (issue/list/jql/help).
+---@param width number|nil Maximum wrap width.
+---@return string[] lines Wrapped shortcut lines.
+---@return table highlights Highlight entries aligned to lines.
 local function shortcut_bar_lines(section_key, width)
   local section = shortcut_sections[section_key] or {}
   local actions = {}
@@ -337,6 +365,10 @@ local function shortcut_bar_lines(section_key, width)
   return lines, highlights
 end
 
+---Construct the help popup content and highlights.
+---@param width number|nil Desired popup width.
+---@return string[] lines Help text lines.
+---@return table highlights Highlight entries per line.
 local function help_popup_lines(width)
   local lines = {}
   local highlights = {}
@@ -373,15 +405,28 @@ local function help_popup_lines(width)
   return lines, highlights
 end
 
+---Ensure highlight groups for jira.nvim popups exist.
+---@return nil
 function Popup.ensure_highlights()
   ensure_popup_highlights()
 end
 
+---Build the shortcut bar text and highlight metadata for a given popup section.
+---@param section_key string Section identifier such as "issue", "list", or "jql".
+---@param width number|nil Desired wrap width for the bar.
+---@return string[] lines Wrapped shortcut lines.
+---@return table highlights Highlight entries aligned with the returned lines.
 function Popup.shortcut_bar_lines(section_key, width)
   ensure_popup_highlights()
   return shortcut_bar_lines(section_key, width)
 end
 
+---Append lines and highlight metadata from one section into another.
+---@param target_lines string[] Accumulator for lines.
+---@param target_highlights table Accumulator for highlight entries.
+---@param section_lines string[] Lines to append.
+---@param section_highlights table|nil Highlights aligned to section_lines.
+---@return nil
 local function append_section(target_lines, target_highlights, section_lines, section_highlights)
   if not section_lines or #section_lines == 0 then
     return
@@ -398,6 +443,10 @@ local function append_section(target_lines, target_highlights, section_lines, se
   end
 end
 
+---Extract display text and active status from a Jira user table.
+---@param user table|nil Jira user object.
+---@return string|nil display User display string.
+---@return boolean inactive True when the user is inactive.
 local function user_display_and_status(user)
   if vim and vim.NIL and user == vim.NIL then
     return nil, false
@@ -426,12 +475,18 @@ local function user_display_and_status(user)
   return base, inactive
 end
 
+---Cycle through the user palette to choose the next highlight color.
+---@return string color Hex color string.
 local function next_user_color()
   local color = user_palette[(user_highlight_counter % #user_palette) + 1]
   user_highlight_counter = user_highlight_counter + 1
   return color
 end
 
+---Return a highlight group for a user, creating one if necessary.
+---@param name string User display name.
+---@param inactive boolean Whether the user is inactive.
+---@return string|nil group Highlight group name or nil when input is blank.
 local function highlight_group_for_user(name, inactive)
   if not name or name == "" or name == "-" then
     return nil
@@ -454,6 +509,11 @@ local function highlight_group_for_user(name, inactive)
   return group
 end
 
+---Determine a numeric level based on keyword rules.
+---@param value string|nil Text to inspect.
+---@param rules table List of keyword rules.
+---@param default_level integer Fallback level when none match.
+---@return integer level Chosen level.
 local function determine_level(value, rules, default_level)
   if not value or value == "" then
     return default_level
@@ -469,6 +529,9 @@ local function determine_level(value, rules, default_level)
   return default_level
 end
 
+---Get the highlight group for a priority string.
+---@param value string|nil Priority text.
+---@return string|nil group Highlight group name or nil when blank.
 local function priority_highlight_group(value)
   if not value or value == "-" then
     return nil
@@ -479,6 +542,9 @@ local function priority_highlight_group(value)
   return string.format("JiraPopupPriorityLevel%d", level)
 end
 
+---Get the highlight group for a severity string.
+---@param value string|nil Severity text.
+---@return string|nil group Highlight group name or nil when blank.
 local function severity_highlight_group(value)
   if not value or value == "-" then
     return nil
@@ -489,10 +555,16 @@ local function severity_highlight_group(value)
   return string.format("JiraPopupSeverityLevel%d", level)
 end
 
+---Escape percent signs for safe use in statusline strings.
+---@param text string|nil Input text.
+---@return string escaped Escaped text.
 local function escape_statusline_text(text)
   return (text or ""):gsub("%%", "%%%%")
 end
 
+---Assemble a statusline string for popup windows.
+---@param status_text string|nil Status to display.
+---@return string statusline Formatted statusline content.
 local function build_statusline_text(status_text)
   ensure_popup_highlights()
   local status_display = status_text
@@ -507,6 +579,10 @@ local function build_statusline_text(status_text)
   return table.concat(components)
 end
 
+---Apply a Jira popup statusline to the given window.
+---@param win number Window handle.
+---@param status_text string|nil Status message to show.
+---@return nil
 local function apply_statusline(win, status_text)
   if not win or not vim.api.nvim_win_is_valid(win) then
     return
@@ -527,6 +603,10 @@ local function add_buffer_highlight(buf, group, line, start_col, end_col)
   pcall(vim.api.nvim_buf_add_highlight, buf, popup_ns, group, line, start_col, end_col)
 end
 
+---Check if an issue key belongs to an ignored project list.
+---@param issue_key string|nil Issue key.
+---@param ignored_projects table|nil Map of ignored project keys.
+---@return boolean ignore True when the key should be skipped.
 local function should_ignore_issue_key(issue_key, ignored_projects)
   if not issue_key or issue_key == "" then
     return false
@@ -541,6 +621,12 @@ local function should_ignore_issue_key(issue_key, ignored_projects)
   return ignored_projects[project:upper()] == true
 end
 
+---Highlight issue keys within rendered lines.
+---@param buf number Buffer handle.
+---@param lines string[] Lines to scan.
+---@param pattern string Issue key pattern.
+---@param ignored_projects table|nil Map of ignored project keys.
+---@return nil
 local function add_issue_key_highlights(buf, lines, pattern, ignored_projects)
   pattern = pattern or "%u+-%d+"
   if not lines or pattern == "" then
@@ -562,6 +648,9 @@ local function add_issue_key_highlights(buf, lines, pattern, ignored_projects)
   end
 end
 
+---Trim trailing punctuation from a URL match.
+---@param url string|nil Raw URL match from text.
+---@return string sanitized URL without surrounding punctuation.
 local function sanitize_url_match(url)
   if not url or url == "" then
     return ""
@@ -575,6 +664,10 @@ local function sanitize_url_match(url)
   }
   for _, pair in ipairs(pairs) do
     local open_char, close_char = pair[1], pair[2]
+    ---Count occurrences of a character in a string.
+    ---@param str string Text to inspect.
+    ---@param char string Single character to count.
+    ---@return integer count Number of occurrences.
     local function count_char(str, char)
       local _, count = str:gsub("%" .. char, "")
       return count
@@ -586,6 +679,10 @@ local function sanitize_url_match(url)
   return sanitized
 end
 
+---Highlight URLs within popup content.
+---@param buf number Buffer handle.
+---@param lines string[] Lines to scan.
+---@return nil
 local function add_link_highlights(buf, lines)
   if not lines then
     return
@@ -606,6 +703,10 @@ local function add_link_highlights(buf, lines)
   end
 end
 
+---Find the active window and cursor for a buffer, preferring mouse events.
+---@param buf number Buffer handle.
+---@return number|nil win Window handle or nil.
+---@return table|nil cursor Cursor position {line, col} (1-based line, 0-based col).
 local function cursor_for_buffer(buf)
   if not buf or not vim.api.nvim_buf_is_valid(buf) then
     return nil, nil
@@ -628,6 +729,10 @@ local function cursor_for_buffer(buf)
   return win, vim.api.nvim_win_get_cursor(win)
 end
 
+---Locate the URL under or nearest the cursor.
+---@param buf number Buffer handle.
+---@param cursor table|nil Cursor position {line, col}.
+---@return string|nil url URL under cursor or first URL on the line.
 local function find_url_under_cursor(buf, cursor)
   if not buf or not vim.api.nvim_buf_is_valid(buf) then
     return nil
@@ -663,6 +768,13 @@ local function find_url_under_cursor(buf, cursor)
   end
   return nil
 end
+
+---Locate an issue key under or near the cursor.
+---@param buf number Buffer handle.
+---@param pattern string Issue key pattern.
+---@param ignored_projects table|nil Map of ignored project keys.
+---@param cursor table|nil Cursor position {line, col}.
+---@return string|nil issue_key Issue key found or nil.
 local function find_issue_key_under_cursor(buf, pattern, ignored_projects, cursor)
   if not buf or not vim.api.nvim_buf_is_valid(buf) then
     return nil
@@ -700,6 +812,10 @@ local function find_issue_key_under_cursor(buf, pattern, ignored_projects, curso
   return first_match
 end
 
+---Write a popup-related event to the shared log file.
+---@param event string Event name.
+---@param payload any Additional details to capture.
+---@return nil
 local function log_popup_event(event, payload)
   local ok_path, path = pcall(function()
     local info = debug.getinfo(1, "S")
@@ -738,6 +854,11 @@ local function log_popup_event(event, payload)
   file:close()
 end
 
+---Open the URL or issue key located at the current cursor position.
+---@param buf number Buffer handle.
+---@param config table|nil Plugin configuration.
+---@param trigger string|nil What initiated the action (for logging).
+---@return boolean opened True when a URL or issue was opened.
 local function open_url_under_cursor(buf, config, trigger)
   local _, cursor = cursor_for_buffer(buf)
   if not cursor then
@@ -809,6 +930,13 @@ local function open_url_under_cursor(buf, config, trigger)
   return false
 end
 
+---Apply provided highlights plus auto-detected issue key and URL highlights.
+---@param buf number Buffer handle.
+---@param lines string[] Rendered lines.
+---@param highlights table|nil Explicit highlight entries.
+---@param issue_pattern string|nil Issue key pattern.
+---@param ignored_projects table|nil Map of ignored project keys.
+---@return nil
 local function apply_highlights(buf, lines, highlights, issue_pattern, ignored_projects)
   ensure_popup_highlights()
   vim.api.nvim_buf_clear_namespace(buf, popup_ns, 0, -1)
@@ -874,6 +1002,8 @@ local help_state = {
   bar_buf = nil,
 }
 
+---Remove the active issue list autocmd, if present.
+---@return nil
 local function clear_list_autocmd()
   if list_state.autocmd then
     pcall(vim.api.nvim_del_autocmd, list_state.autocmd)
@@ -881,18 +1011,26 @@ local function clear_list_autocmd()
   end
 end
 
+---Safely close a Neovim window.
+---@param win number|nil Window handle.
+---@return nil
 local function close_window(win)
   if win and vim.api.nvim_win_is_valid(win) then
     vim.api.nvim_win_close(win, true)
   end
 end
 
+---Delete a buffer if it is valid.
+---@param buf number|nil Buffer handle.
+---@return nil
 local function wipe_buffer(buf)
   if buf and vim.api.nvim_buf_is_valid(buf) then
     pcall(vim.api.nvim_buf_delete, buf, { force = true })
   end
 end
 
+---Close the issue list popup and reset list state.
+---@return nil
 local function close_issue_list()
   clear_list_autocmd()
   close_window(list_state.bar_win)
@@ -923,6 +1061,8 @@ local function close_issue_list()
   }
 end
 
+---Refresh the visual selection highlight within the issue list.
+---@return nil
 local function refresh_issue_list_selection()
   if not list_state.buf or not vim.api.nvim_buf_is_valid(list_state.buf) then
     return
@@ -944,6 +1084,8 @@ local function refresh_issue_list_selection()
   end
 end
 
+---Convert the current cursor position to a list row index.
+---@return integer|nil index Row number relative to the issue list, or nil.
 local function list_row_from_cursor()
   if not list_state.win or not vim.api.nvim_win_is_valid(list_state.win) then
     return nil
@@ -957,6 +1099,8 @@ local function list_row_from_cursor()
   return idx
 end
 
+---Update selection based on the current cursor position.
+---@return nil
 local function sync_list_selection_to_cursor()
   local idx = list_row_from_cursor()
   if not idx then
@@ -968,6 +1112,8 @@ local function sync_list_selection_to_cursor()
   end
 end
 
+---Restore the selection prior to a search navigation.
+---@return nil
 local function restore_selection_before_search()
   if not list_state.selection_before_search then
     return
@@ -977,6 +1123,9 @@ local function restore_selection_before_search()
   refresh_issue_list_selection()
 end
 
+---Move the current issue list selection by a delta.
+---@param delta integer Number of rows to move.
+---@return nil
 local function move_issue_list_selection(delta)
   if not list_state.selection or not list_state.issues or #list_state.issues == 0 then
     return
@@ -985,6 +1134,8 @@ local function move_issue_list_selection(delta)
   refresh_issue_list_selection()
 end
 
+---Collect context about the active list selection for callbacks.
+---@return table|nil context Selection metadata or nil when unavailable.
 local function list_selection_context()
   if not list_state.win or not vim.api.nvim_win_is_valid(list_state.win) then
     return nil
@@ -998,6 +1149,9 @@ local function list_selection_context()
   }
 end
 
+---Invoke pagination handlers to move between issue list pages.
+---@param delta integer Positive for next page, negative for previous.
+---@return nil
 local function goto_issue_list_page(delta)
   local handlers = list_state.page_handlers or {}
   if delta > 0 and handlers.next_page then
@@ -1007,6 +1161,8 @@ local function goto_issue_list_page(delta)
   end
 end
 
+---Trigger the selection handler for the current issue list row.
+---@return nil
 local function activate_current_issue()
   if not list_state.on_select or not list_state.selection or not list_state.issues then
     return
@@ -1023,10 +1179,15 @@ local function activate_current_issue()
   handler(issue, context)
 end
 
+---Check if a window handle is valid.
+---@param win number|nil Window handle.
+---@return boolean valid True when valid.
 local function valid_win(win)
   return win ~= nil and vim.api.nvim_win_is_valid(win)
 end
 
+---Update the set of windows that should keep focus within the popup.
+---@return nil
 local function update_allowed_wins()
   local allowed = {}
   for _, win in ipairs({ state.main_win, state.sidebar_win, state.summary_win, state.url_win, state.help_win }) do
@@ -1040,6 +1201,8 @@ local function update_allowed_wins()
   state.allowed_wins = allowed
 end
 
+---Clear the focus guard autocmd if present.
+---@return nil
 local function clear_focus_guard()
   if state.focus_autocmd then
     pcall(vim.api.nvim_del_autocmd, state.focus_autocmd)
@@ -1047,6 +1210,9 @@ local function clear_focus_guard()
   end
 end
 
+---Check whether a window is allowed to receive focus.
+---@param win number|nil Window handle.
+---@return boolean ok True when focus is permitted.
 local function is_allowed_win(win)
   for _, allowed in ipairs(state.allowed_wins or {}) do
     if allowed == win then
@@ -1056,6 +1222,8 @@ local function is_allowed_win(win)
   return false
 end
 
+---Prevent focus from leaving popup windows.
+---@return nil
 local function activate_focus_guard()
   clear_focus_guard()
   state.focus_autocmd = vim.api.nvim_create_autocmd("WinEnter", {
@@ -1079,18 +1247,28 @@ local function activate_focus_guard()
   })
 end
 
+---Remove the window size guard autocmd.
+---@return nil
 local function clear_size_guard()
   if state.size_autocmd then
     pcall(vim.api.nvim_del_autocmd, state.size_autocmd)
     state.size_autocmd = nil
   end
 end
+
+---Clone a single dimension value, preserving tables when needed.
+---@param value any Dimension value from window config.
+---@return any cloned Copied value.
 local function clone_dimension_value(value)
   if type(value) == "table" then
     return vim.deepcopy(value)
   end
   return value
 end
+
+---Capture the current window configuration values.
+---@param win number Window handle.
+---@return table|nil dims Recorded dimension table or nil.
 local function record_window_dimensions(win)
   if not valid_win(win) then
     return nil
@@ -1109,6 +1287,10 @@ local function record_window_dimensions(win)
   }
 end
 
+---Ensure a window matches the desired floating dimensions.
+---@param win number Window handle.
+---@param target table Desired configuration values.
+---@return nil
 local function enforce_window_dimensions(win, target)
   if not target or not valid_win(win) then
     return
@@ -1131,6 +1313,8 @@ local function enforce_window_dimensions(win, target)
   end
 end
 
+---Restore all tracked popup window sizes/positions.
+---@return nil
 local function restore_window_dimensions()
   if not state.dimensions then
     return
@@ -1140,6 +1324,8 @@ local function restore_window_dimensions()
   end
 end
 
+---Activate guards to keep popup windows sized correctly.
+---@return nil
 local function activate_size_guard()
   clear_size_guard()
   if not state.dimensions then
@@ -1161,6 +1347,9 @@ local function activate_size_guard()
   restore_window_dimensions()
 end
 
+---Normalize Jira base URL from config or environment.
+---@param config table|nil Plugin configuration.
+---@return string base_url Normalized base URL without trailing slashes.
 local function normalized_base_url(config)
   if config and config.api and config.api.base_url and config.api.base_url ~= "" then
     return (config.api.base_url or ""):gsub("/*$", "")
@@ -1168,6 +1357,10 @@ local function normalized_base_url(config)
   return (vim.env.JIRA_BASE_URL or ""):gsub("/*$", "")
 end
 
+---Build the browser URL for a given issue key.
+---@param issue_key string Issue key such as "ABC-123".
+---@param config table|nil Plugin configuration.
+---@return string url Issue URL or empty string when missing config.
 format_issue_url = function(issue_key, config)
   if not issue_key or issue_key == "" then
     return ""
@@ -1179,6 +1372,8 @@ format_issue_url = function(issue_key, config)
   return string.format("%s/browse/%s", base, issue_key)
 end
 
+---Return all popup-related content windows.
+---@return number[] wins List of floating window handles.
 local function popup_content_windows()
   local wins = {}
   for _, win in ipairs({ state.main_win, state.sidebar_win, state.summary_win, state.url_win, state.help_win }) do
@@ -1192,6 +1387,9 @@ local function popup_content_windows()
   return wins
 end
 
+---Focus a specific popup window and track it.
+---@param win number Window handle.
+---@return nil
 local function focus_window(win)
   if valid_win(win) then
     vim.api.nvim_set_current_win(win)
@@ -1199,6 +1397,9 @@ local function focus_window(win)
   end
 end
 
+---Prevent a popup window from resizing.
+---@param win number Window handle.
+---@return nil
 local function lock_window_size(win)
   if not valid_win(win) then
     return
@@ -1207,6 +1408,10 @@ local function lock_window_size(win)
   pcall(vim.api.nvim_win_set_option, win, "winfixheight", true)
 end
 
+---Find a window's index inside a list.
+---@param target number Target window handle.
+---@param windows number[] Window list.
+---@return integer|nil index Index of the target or nil.
 local function find_window_index(target, windows)
   for idx, win in ipairs(windows) do
     if win == target then
@@ -1216,6 +1421,9 @@ local function find_window_index(target, windows)
   return nil
 end
 
+---Move focus to the next popup window in order.
+---@param current_win number Current focused window.
+---@return nil
 local function focus_next_popup_window(current_win)
   local wins = popup_content_windows()
   if #wins == 0 then
@@ -1226,6 +1434,9 @@ local function focus_next_popup_window(current_win)
   focus_window(wins[next_idx])
 end
 
+---Move focus to the previous popup window in order.
+---@param current_win number Current focused window.
+---@return nil
 local function focus_previous_popup_window(current_win)
   local wins = popup_content_windows()
   if #wins == 0 then
@@ -1236,6 +1447,9 @@ local function focus_previous_popup_window(current_win)
   focus_window(wins[prev_idx])
 end
 
+---Record and share a search pattern across popup windows.
+---@param pattern string|nil Search term.
+---@return nil
 local function record_search_pattern(pattern)
   if not pattern or pattern == "" then
     state.search = nil
@@ -1245,6 +1459,11 @@ local function record_search_pattern(pattern)
   pcall(vim.fn.setreg, "/", pattern)
 end
 
+---Run a search within a specific popup window.
+---@param win number Window handle.
+---@param pattern string Search regex/pattern.
+---@param opts table|nil Options such as include_current/backward.
+---@return boolean found True when the pattern was found.
 local function search_in_window(win, pattern, opts)
   opts = opts or {}
   if not valid_win(win) or not pattern or pattern == "" then
@@ -1272,6 +1491,9 @@ local function search_in_window(win, pattern, opts)
   return true
 end
 
+---Prompt for a search term and search within popup panes.
+---@param start_win number|nil Window to search first.
+---@return nil
 local function start_popup_search(start_win)
   vim.fn.inputsave()
   local ok, pattern = pcall(vim.fn.input, "/")
@@ -1285,6 +1507,10 @@ local function start_popup_search(start_win)
   end
 end
 
+---Repeat the last popup search forward or backward.
+---@param target_win number|nil Window to search.
+---@param backward boolean|nil When true, search backward.
+---@return nil
 local function repeat_popup_search(target_win, backward)
   local search_state = state.search
   if not search_state or not search_state.pattern or search_state.pattern == "" then
@@ -1296,6 +1522,8 @@ local function repeat_popup_search(target_win, backward)
   end
 end
 
+---Close the floating help popup buffers and windows.
+---@return nil
 local function close_help_popup()
   vim.api.nvim_clear_autocmds({ group = help_group })
   close_window(help_state.bar_win)
@@ -1312,6 +1540,8 @@ local function close_help_popup()
   }
 end
 
+---Close the active issue popup and clean up associated windows/buffers.
+---@return nil
 function Popup.close()
   clear_focus_guard()
   clear_size_guard()
@@ -1348,12 +1578,17 @@ function Popup.close()
   end
 end
 
+---Close any open popups including issue, list, and help windows.
+---@return nil
 function Popup.close_all()
   Popup.close()
   close_issue_list()
   close_help_popup()
 end
 
+---Determine sizes and positions for the issue popup container.
+---@param config table Plugin configuration containing popup sizing.
+---@return table dims Width, height, row, and column values.
 local function calculate_dimensions(config)
   local columns = vim.o.columns
   local lines = vim.o.lines - vim.o.cmdheight
@@ -1381,6 +1616,10 @@ local function calculate_dimensions(config)
   }
 end
 
+---Calculate dimensions for the issue list popups.
+---@param config table Plugin configuration.
+---@param layout table|nil Layout overrides for the list popup.
+---@return table dims Width, height, row, and column values.
 local function list_dimensions(config, layout)
   local columns = vim.o.columns
   local lines = vim.o.lines - vim.o.cmdheight
@@ -1405,6 +1644,9 @@ local function list_dimensions(config, layout)
   }
 end
 
+---Render the keyboard shortcut help popup.
+---@param config table|nil Plugin configuration for sizing and styling.
+---@return nil
 function Popup.show_help(config)
   close_help_popup()
   ensure_popup_highlights()
@@ -1506,6 +1748,9 @@ function Popup.show_help(config)
   }
 end
 
+---Compute the display width of text, respecting wide characters.
+---@param text string Text to measure.
+---@return integer width Display width.
 local function display_width(text)
   if vim and vim.fn and vim.fn.strdisplaywidth then
     local ok, width = pcall(vim.fn.strdisplaywidth, text)
@@ -1516,6 +1761,10 @@ local function display_width(text)
   return #text
 end
 
+---Slice a string to a maximum display width.
+---@param text string Text to slice.
+---@param max_width integer Maximum display width.
+---@return string chunk Sliced string.
 local function slice_by_width(text, max_width)
   if max_width <= 0 then
     return ""
@@ -1529,6 +1778,10 @@ local function slice_by_width(text, max_width)
   return text:sub(1, max_width)
 end
 
+---Truncate cell text to fit within a width, adding ellipsis when needed.
+---@param text string|nil Text to truncate.
+---@param max_width integer Maximum display width.
+---@return string value Truncated value or placeholder.
 local function truncate_cell(text, max_width)
   text = utils.trim(text or "")
   if text == "" then
@@ -1546,6 +1799,10 @@ local function truncate_cell(text, max_width)
   return slice_by_width(text, safe_width) .. suffix
 end
 
+---Format a summary label for issue list pagination.
+---@param pagination table|nil Pagination metadata.
+---@param issue_count integer Number of issues in the current page.
+---@return string summary Summary label for the list header.
 local function format_issue_list_summary(pagination, issue_count)
   if not pagination then
     return string.format("%d issues", issue_count)
@@ -1588,6 +1845,11 @@ local function format_issue_list_summary(pagination, issue_count)
   return summary
 end
 
+---Construct issue list lines and metadata for display.
+---@param issues table[] List of issue entries.
+---@param dims table Dimension info including width.
+---@param opts table|nil Display options (title, pagination, empty message).
+---@return table data Lines and positional metadata for highlighting.
 local function build_issue_list_lines(issues, dims, opts)
   issues = issues or {}
   opts = opts or {}
@@ -1639,6 +1901,9 @@ local function build_issue_list_lines(issues, dims, opts)
   }
 end
 
+---Return a comma-separated version list from Jira version values.
+---@param values table|string|nil Version field value.
+---@return string text Comma-separated version names.
 local function version_list_display(values)
   if (vim and vim.NIL and values == vim.NIL) or not values then
     return ""
@@ -1665,6 +1930,10 @@ local function version_list_display(values)
   return table.concat(names, ", ")
 end
 
+---Calculate how long an issue has been open, if resolved.
+---@param issue table Jira issue object.
+---@return string label Human readable duration or status text.
+---@return boolean open True when the issue is still open.
 local function issue_open_duration(issue)
   local fields = issue.fields or {}
   local created_ts = utils.parse_jira_timestamp(fields.created)
@@ -1686,6 +1955,9 @@ local function issue_open_duration(issue)
   return utils.humanize_duration(duration), false
 end
 
+---Count comments on an issue from fields.
+---@param issue table Jira issue object.
+---@return integer count Number of comments.
 local function comment_count(issue)
   local comment_collection = issue.fields and issue.fields.comment
   local comments = comment_collection and comment_collection.comments
@@ -1698,6 +1970,9 @@ local function comment_count(issue)
   return 0
 end
 
+---Count changelog entries for an issue.
+---@param issue table Jira issue object.
+---@return integer count Number of change history entries.
 local function change_count(issue)
   local histories = issue.changelog and issue.changelog.histories
   if type(histories) == "table" then
@@ -1706,6 +1981,9 @@ local function change_count(issue)
   return 0
 end
 
+---Normalize an assignee display value into a string.
+---@param value any Raw assignee display value.
+---@return string|nil text Normalized text or nil.
 local function normalize_assignee_display(value)
   if vim and vim.NIL and value == vim.NIL then
     return nil
@@ -1722,6 +2000,9 @@ local function normalize_assignee_display(value)
   return nil
 end
 
+---Extract assignee change history events from an issue.
+---@param issue table Jira issue object.
+---@return table events Ordered list of assignee change events.
 local function assignee_history(issue)
   local histories = (issue.changelog and issue.changelog.histories) or {}
   local events = {}
@@ -1774,6 +2055,10 @@ local function assignee_history(issue)
   return ordered
 end
 
+---Format assignee history into a display string with segment offsets.
+---@param users string[] Sequence of assignee names.
+---@return string display Joined history string.
+---@return table|nil segments Highlight segment positions for each name.
 local function format_assignee_history(users)
   if not users or #users == 0 then
     return "-", nil
@@ -1794,6 +2079,11 @@ local function format_assignee_history(users)
   return table.concat(parts), segments
 end
 
+---Build sidebar metadata lines for an issue detail popup.
+---@param issue table Jira issue object.
+---@param width integer Sidebar width.
+---@return string[] lines Sidebar text lines.
+---@return table highlights Highlight entries for sidebar.
 local function sidebar_lines(issue, width)
   local fields = issue.fields or {}
   local resolution = fields.resolution
@@ -1904,6 +2194,11 @@ local function sidebar_lines(issue, width)
   return lines, highlights
 end
 
+---Collect comments, change history, and rendered description for the activity pane.
+---@param issue table Jira issue object.
+---@param width integer Content width for wrapping.
+---@return string[] lines Activity lines.
+---@return table highlights Highlight entries for activity content.
 local function collect_activity(issue, width)
   local lines = {}
   local highlights = {}
@@ -2009,6 +2304,12 @@ local function collect_activity(issue, width)
   return lines, highlights
 end
 
+---Build the main issue content and highlights for the detail popup.
+---@param issue table Jira issue object.
+---@param width integer Available content width.
+---@param config table Plugin configuration.
+---@return string[] lines Rendered body lines.
+---@return table highlights Highlight entries for the body.
 local function main_lines(issue, width, config)
   local fields = issue.fields or {}
   local summary = fields.summary or "(no summary)"
@@ -2054,6 +2355,11 @@ local function main_lines(issue, width, config)
   return lines, highlights
 end
 
+---Create the summary header bar for the issue popup.
+---@param issue table Jira issue object.
+---@param width number Popup width.
+---@return string[] lines Summary bar lines.
+---@return table highlights Highlight entries.
 local function summary_bar_lines(issue, width)
   local fields = issue.fields or {}
   local summary_text = fields.summary or "(no summary)"
@@ -2067,6 +2373,12 @@ local function summary_bar_lines(issue, width)
   return lines, highlights
 end
 
+---Construct the URL bar displaying the browse link for the issue.
+---@param issue table Jira issue object.
+---@param config table Plugin configuration.
+---@param width number Popup width.
+---@return string[] lines URL bar lines.
+---@return table highlights Highlight entries.
 local function url_bar_lines(issue, config, width)
   local url_value = format_issue_url(issue.key, config)
   if url_value == "" then
@@ -2084,10 +2396,18 @@ local function url_bar_lines(issue, config, width)
   return lines, highlights
 end
 
+---Return shortcut/help bar content for the issue popup.
+---@param width number Popup width.
+---@return string[] lines Shortcut lines.
+---@return table highlights Highlight entries.
 local function help_bar_lines(width)
   return shortcut_bar_lines("issue", width)
 end
 
+---Format the popup window title with navigation hints.
+---@param issue_key string Issue key being displayed.
+---@param nav table|nil Navigation payload.
+---@return string title Title string.
 local function format_popup_title(issue_key, nav)
   local suffix = ""
   if nav and nav.index and nav.total then
@@ -2103,6 +2423,9 @@ local function format_popup_title(issue_key, nav)
   return title
 end
 
+---Ensure lines do not contain embedded newlines before buffer writes.
+---@param lines string[] Lines to sanitize.
+---@return string[] sanitized Cleaned lines.
 local function sanitize_lines(lines)
   -- nvim_buf_set_lines rejects entries containing newline characters
   local sanitized = {}
@@ -2118,6 +2441,11 @@ local function sanitize_lines(lines)
   return sanitized
 end
 
+---Fill a buffer with text and optional syntax highlighting.
+---@param buf number Buffer handle.
+---@param lines string[] Lines to write.
+---@param opts table|nil Options including filetype and syntax hints.
+---@return nil
 function fill_buffer(buf, lines, opts)
   opts = opts or {}
   lines = sanitize_lines(lines)
@@ -2128,6 +2456,10 @@ function fill_buffer(buf, lines, opts)
   vim.bo[buf].filetype = opts.filetype or "jira_popup"
   vim.bo[buf].swapfile = false
 
+  ---Start syntax highlighting for a language using treesitter or :syntax.
+  ---@param lang string Language identifier.
+  ---@param allow_syntax_option boolean Allow falling back to :syntax option.
+  ---@return nil
   local function start_highlighter(lang, allow_syntax_option)
     if not lang or lang == "" then
       return
@@ -2152,6 +2484,9 @@ function fill_buffer(buf, lines, opts)
   end
 end
 
+---Enable yank highlight feedback inside a popup buffer.
+---@param buf number Buffer handle.
+---@return nil
 local function enable_yank_feedback(buf)
   if not buf or not vim.api.nvim_buf_is_valid(buf) then
     return
@@ -2169,11 +2504,21 @@ local function enable_yank_feedback(buf)
   })
 end
 
+---Register keymaps for navigating and interacting with issue popups.
+---@param buf number Buffer handle.
+---@param issue table Jira issue object.
+---@param config table Plugin configuration.
+---@param nav_controls table|nil Navigation callbacks for previous/next issue.
+---@return nil
 local function map_popup_keys(buf, issue, config, nav_controls)
   local opts = { buffer = buf, nowait = true, silent = true }
+  ---Close the popup and restore previous buffers.
+  ---@return nil
   local function close_popup()
     Popup.close()
   end
+  ---Open the current issue in a browser.
+  ---@return nil
   local function open_in_browser()
     local url = format_issue_url(issue.key, config)
     if url == "" then
@@ -2182,24 +2527,39 @@ local function map_popup_keys(buf, issue, config, nav_controls)
     end
     utils.open_url(url)
   end
+  ---Start a search prompt scoped to popup buffers.
+  ---@return nil
   local function search_popup()
     start_popup_search(vim.api.nvim_get_current_win())
   end
+  ---Repeat the last popup search forward.
+  ---@return nil
   local function repeat_search_forward()
     repeat_popup_search(vim.api.nvim_get_current_win(), false)
   end
+  ---Repeat the last popup search backward.
+  ---@return nil
   local function repeat_search_backward()
     repeat_popup_search(vim.api.nvim_get_current_win(), true)
   end
+  ---Focus the next popup window.
+  ---@return nil
   local function focus_next()
     focus_next_popup_window(vim.api.nvim_get_current_win())
   end
+  ---Focus the previous popup window.
+  ---@return nil
   local function focus_prev()
     focus_previous_popup_window(vim.api.nvim_get_current_win())
   end
+  ---Open the link or issue key under the cursor.
+  ---@param trigger string|nil Label describing the trigger.
+  ---@return nil
   local function open_link_at_cursor(trigger)
     open_url_under_cursor(buf, config, trigger)
   end
+  ---Open the shortcut help popup.
+  ---@return nil
   local function open_help_popup()
     Popup.show_help(config)
   end
@@ -2250,6 +2610,9 @@ local function map_popup_keys(buf, issue, config, nav_controls)
   end
 end
 
+---Display an error popup when issue rendering fails.
+---@param message any Error message or object to stringify.
+---@return nil
 local function show_render_error(message)
   local buf = vim.api.nvim_create_buf(false, true)
   local msg = message or "Unknown error"
@@ -2290,6 +2653,8 @@ local function show_render_error(message)
     title_pos = "center",
   })
   local close_opts = { buffer = buf, nowait = true, silent = true }
+  ---Close the error popup window and wipe its buffer.
+  ---@return nil
   local function close()
     close_window(win)
     wipe_buffer(buf)
@@ -2298,6 +2663,11 @@ local function show_render_error(message)
   vim.keymap.set("n", "q", close, close_opts)
 end
 
+---Render a popup listing Jira issues with pagination and selection handlers.
+---@param issues table[] List of issue summaries to display.
+---@param config table Plugin configuration for layout and styling.
+---@param opts table|nil Options including title, pagination, handlers, and layout overrides.
+---@return nil
 function Popup.render_issue_list(issues, config, opts)
   Popup.close()
   close_issue_list()
@@ -2505,20 +2875,33 @@ function Popup.render_issue_list(issues, config, opts)
   return win
 end
 
+---Render the main issue popup showing details, comments, and navigation.
+---@param issue table Jira issue payload to display.
+---@param config table Plugin configuration controlling layout and appearance.
+---@param context table|nil Extra context like navigation controls and return focus window.
+---@return nil
 function Popup.render(issue, config, context)
   Popup.close()
   local created_bufs = {}
   local created_wins = {}
+  ---Track a buffer created during rendering for cleanup.
+  ---@param buf number|nil Buffer handle to track.
+  ---@return nil
   local function track_buf(buf)
     if buf then
       table.insert(created_bufs, buf)
     end
   end
+  ---Track a window created during rendering for cleanup.
+  ---@param win number|nil Window handle to track.
+  ---@return nil
   local function track_win(win)
     if win then
       table.insert(created_wins, win)
     end
   end
+  ---Close any partially created windows/buffers when rendering fails.
+  ---@return nil
   local function cleanup_partials()
     for _, win in ipairs(created_wins) do
       close_window(win)

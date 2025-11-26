@@ -1,7 +1,13 @@
+---Utility helpers for jira.nvim.
+-- Provides encoding helpers, text formatting, date parsing, and Jira-specific mappers.
+
 local utils = {}
 
 local base64_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
+---Encode a string into Base64 without relying on external libs.
+---@param data string|nil Input data.
+---@return string encoded Base64 encoded string or empty string when input is empty.
 local function encode_base64(data)
   if not data or data == "" then
     return ""
@@ -28,6 +34,11 @@ local function encode_base64(data)
   end) .. ({ "", "==", "=" })[#data % 3 + 1])
 end
 
+---Create a base64-encoded Basic auth string for Jira HTTP requests.
+---@param email string API email/username.
+---@param token string API token or key.
+---@return string|nil encoded Base64 encoded credentials, or nil when inputs are missing.
+---@return string|nil err Error message when credentials are incomplete.
 function utils.encode_basic_auth(email, token)
   if not email or email == "" then
     return nil, "API email is missing (set config.api.email or $JIRA_API_EMAIL)"
@@ -38,6 +49,9 @@ function utils.encode_basic_auth(email, token)
   return encode_base64(string.format("%s:%s", email, token))
 end
 
+---Decode a JSON string using Neovim's JSON helpers.
+---@param payload string|nil JSON string to decode.
+---@return table|string|number|boolean|nil decoded Parsed Lua value or nil on failure/empty input.
 local function json_decode(payload)
   if not payload or payload == "" then
     return nil
@@ -50,6 +64,9 @@ end
 
 utils.json_decode = json_decode
 
+---Encode a Lua value as JSON using Neovim's JSON helpers.
+---@param payload any Lua value to encode.
+---@return string json JSON representation.
 local function json_encode(payload)
   if payload == nil then
     return "null"
@@ -62,10 +79,16 @@ end
 
 utils.json_encode = json_encode
 
+---Trim whitespace from both ends of a string.
+---@param text string|nil Input text.
+---@return string trimmed Text without leading/trailing whitespace.
 function utils.trim(text)
   return (text and text:gsub("^%s+", ""):gsub("%s+$", "")) or ""
 end
 
+---Percent-encode a value for safe inclusion in URLs.
+---@param value any Value to encode.
+---@return string encoded URL-encoded string.
 function utils.url_encode(value)
   if value == nil then
     return ""
@@ -77,6 +100,10 @@ function utils.url_encode(value)
   end)
 end
 
+---Convert an ADF node into plain text recursively.
+---@param node table|string|nil ADF node or raw text.
+---@param indent string|nil Current indentation for list items.
+---@return string text Flattened text for the node.
 local function adf_node_to_text(node, indent)
   indent = indent or ""
   if not node then
@@ -116,6 +143,9 @@ local function adf_node_to_text(node, indent)
   return joined
 end
 
+---Convert Atlassian Document Format content into trimmed plain text.
+---@param value table|string|nil ADF structure or plain string.
+---@return string text Flattened text content.
 function utils.adf_to_text(value)
   if not value then
     return ""
@@ -133,6 +163,9 @@ function utils.adf_to_text(value)
   return ""
 end
 
+---Strip basic HTML tags and convert block elements to plaintext.
+---@param html string|nil HTML string.
+---@return string text Plain text representation.
 function utils.html_to_text(html)
   if not html or html == "" then
     return ""
@@ -145,6 +178,9 @@ function utils.html_to_text(html)
   return utils.trim(text)
 end
 
+---Extract a human-readable description from a Jira issue payload.
+---@param issue table|nil Jira issue response.
+---@return string description Plain text description or empty string.
 function utils.requested_description(issue)
   if not issue then
     return ""
@@ -164,6 +200,10 @@ function utils.requested_description(issue)
   return ""
 end
 
+---Wrap a string into lines at the desired width.
+---@param text string|nil Input text to wrap.
+---@param width number|nil Maximum line width (defaults to 80).
+---@return string[] lines Wrapped lines with paragraph spacing.
 function utils.wrap_text(text, width)
   width = width or 80
   local lines = {}
@@ -193,6 +233,9 @@ function utils.wrap_text(text, width)
   return lines
 end
 
+---Parse a Jira timestamp string into a Lua epoch value.
+---@param value string|nil Jira timestamp (e.g., 2023-08-01T12:34:56.000+0000).
+---@return integer|nil seconds Epoch seconds, or nil when parsing fails.
 local function parse_jira_timestamp(value)
   if (vim and vim.NIL and value == vim.NIL) or not value or value == "" then
     return nil
@@ -216,6 +259,9 @@ end
 
 utils.parse_jira_timestamp = parse_jira_timestamp
 
+---Format a Jira timestamp string into a readable date/time.
+---@param value string|nil Timestamp string from Jira.
+---@return string formatted Human-friendly date/time or the original value when parsing fails.
 function utils.format_date(value)
   if (vim and vim.NIL and value == vim.NIL) or not value or value == "" then
     return ""
@@ -230,6 +276,9 @@ function utils.format_date(value)
   return os.date("%Y-%m-%d %H:%M", timestamp)
 end
 
+---Convert a duration in seconds into a compact human-readable string.
+---@param seconds number|nil Duration in seconds.
+---@return string label Abbreviated duration such as "2h 5m".
 function utils.humanize_duration(seconds)
   seconds = tonumber(seconds) or 0
   if seconds <= 0 then
@@ -263,6 +312,9 @@ function utils.humanize_duration(seconds)
   return table.concat(parts, " ")
 end
 
+---Normalize a Jira comment body to plain text.
+---@param comment table|nil Jira comment object.
+---@return string body Plain text comment content.
 function utils.comment_body(comment)
   if not comment then
     return ""
@@ -273,6 +325,9 @@ function utils.comment_body(comment)
   return utils.adf_to_text(comment.body)
 end
 
+---Open a URL using the best available mechanism for the current OS.
+---@param url string|nil URL to open.
+---@return nil
 function utils.open_url(url)
   if not url or url == "" then
     return
@@ -294,6 +349,9 @@ function utils.open_url(url)
   end
 end
 
+---Extract severity information from an issue using common Jira field patterns.
+---@param issue table Jira issue object.
+---@return string|nil severity Severity string when available.
 function utils.get_severity(issue)
   local fields = issue.fields or {}
   if fields.severity then
@@ -312,6 +370,9 @@ function utils.get_severity(issue)
   return nil
 end
 
+---Replace nil or empty strings with a display placeholder.
+---@param value any Value to normalize.
+---@return any normalized The value or "-" when blank.
 function utils.blank_if_nil(value)
   if value == nil then
     return "-"

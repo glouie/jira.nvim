@@ -1,7 +1,12 @@
+---HTTP helpers for interacting with Jira's REST API via curl.
+-- Handles request construction, logging, error normalization, and higher-level fetch helpers.
+
 local utils = require("jira.utils")
 
 local M = {}
 
+---Resolve the absolute path for the API access log file.
+---@return string path Filesystem path used for API request/response logs.
 local function resolve_log_path()
   local info = debug.getinfo(1, "S")
   if info and info.source and info.source:sub(1, 1) == "@" then
@@ -17,6 +22,9 @@ local function resolve_log_path()
   return fallback .. "/jira.nvim/api_access.log"
 end
 
+---Ensure the directory for the given log path exists.
+---@param path string Path to the log file.
+---@return nil
 local function ensure_log_directory(path)
   local dir = vim.fn.fnamemodify(path, ":p:h")
   if dir ~= "" then
@@ -27,6 +35,10 @@ end
 local api_log_path = resolve_log_path()
 ensure_log_directory(api_log_path)
 
+---Append a structured API access log entry to disk.
+---@param event string Short event label such as "REQUEST" or "ERROR".
+---@param details string|nil Additional text payload to log.
+---@return nil
 local function log_api_access(event, details)
   local timestamp = os.date("%Y-%m-%d %H:%M:%S")
   local message = string.format("[%s] %s: %s\n", timestamp, event, details or "")
@@ -38,6 +50,9 @@ local function log_api_access(event, details)
   file:close()
 end
 
+---Strip sensitive fields from curl argument lists before logging.
+---@param args string[] Raw curl arguments including headers.
+---@return string[] sanitized Arguments with secrets like Authorization masked.
 local function sanitize_args(args)
   local sanitized = {}
   local i = 1
@@ -60,6 +75,9 @@ local function sanitize_args(args)
   return sanitized
 end
 
+---Format curl arguments into a readable string for logs.
+---@param args string[] Argument list to format.
+---@return string text Space-joined representation with quotes preserved.
 local function format_args_for_log(args)
   local parts = {}
   for _, arg in ipairs(args) do
@@ -72,6 +90,10 @@ local function format_args_for_log(args)
   return table.concat(parts, " ")
 end
 
+---Run a curl command asynchronously and capture output.
+---@param args string[] Curl argument list.
+---@param callback fun(stdout:string|nil, err:string|nil) Invoked with stdout or error string.
+---@return any job_handle Handle returned by the chosen job runner.
 local function run_command(args, callback)
   log_api_access("REQUEST", format_args_for_log(sanitize_args(args)))
   if vim.system then
@@ -137,6 +159,12 @@ local function normalize_base_url(url)
   return url:gsub("/*$", "")
 end
 
+---Construct the curl argument list for a Jira REST request.
+---@param method string HTTP method (GET/POST/etc).
+---@param endpoint string Fully qualified Jira endpoint URL.
+---@param auth_header string Base64-encoded Basic auth header value.
+---@param body string|nil Optional JSON payload.
+---@return string[] args Curl command arguments.
 local function build_request_args(method, endpoint, auth_header, body)
   local args = {
     "curl",
@@ -159,10 +187,19 @@ local function build_request_args(method, endpoint, auth_header, body)
   return args
 end
 
+---Build curl arguments for a GET request.
+---@param endpoint string Target Jira endpoint URL.
+---@param auth_header string Basic auth header value.
+---@return string[] args Curl command arguments.
 local function build_get_args(endpoint, auth_header)
   return build_request_args("GET", endpoint, auth_header)
 end
 
+---Build curl arguments for a POST request.
+---@param endpoint string Target Jira endpoint URL.
+---@param auth_header string Basic auth header value.
+---@param body string JSON payload to send.
+---@return string[] args Curl command arguments.
 local function build_post_args(endpoint, auth_header, body)
   return build_request_args("POST", endpoint, auth_header, body)
 end
@@ -192,6 +229,9 @@ local connection_error_phrases = {
   "empty reply from server",
 }
 
+---Extract an HTTP status code from a curl error message.
+---@param message string Error output from curl.
+---@return integer|nil status Parsed HTTP status or nil.
 local function extract_http_status(message)
   local status = message:match("error:%s*(%d+)")
   if status then
@@ -200,6 +240,9 @@ local function extract_http_status(message)
   return nil
 end
 
+---Heuristically detect network or connection errors from curl output.
+---@param message string Error output from curl.
+---@return boolean is_connection_problem True when the error appears to be connectivity related.
 local function looks_like_connection_problem(message)
   if message == "" then
     return false
@@ -220,6 +263,9 @@ local function looks_like_connection_problem(message)
   return false
 end
 
+---Format a readable label for an issue or target resource.
+---@param issue_key string|nil Issue key if available.
+---@return string label Human-friendly subject label.
 local function format_subject_label(issue_key)
   if issue_key and issue_key ~= "" then
     return issue_key
@@ -227,6 +273,10 @@ local function format_subject_label(issue_key)
   return "the requested issue"
 end
 
+---Generate a friendly connection error message referencing the base URL.
+---@param subject_label string|nil Subject being loaded (issue/project/etc).
+---@param base_url string|nil Jira base URL.
+---@return string message Human-readable guidance about connectivity.
 local function format_connection_error(subject_label, base_url)
   local target = subject_label or "the requested resource"
   local location = ""
@@ -240,6 +290,10 @@ local function format_connection_error(subject_label, base_url)
   )
 end
 
+---Split an issue key into project and number components.
+---@param issue_key string|nil Issue key like "ABC-123".
+---@return string|nil project Normalized project key or nil.
+---@return string|nil number Issue number text or nil.
 local function parse_issue_key(issue_key)
   if not issue_key or issue_key == "" then
     return nil, nil
@@ -251,6 +305,11 @@ local function parse_issue_key(issue_key)
   return project:upper(), number
 end
 
+---Translate a raw Jira error into a user-friendly message.
+---@param err string|nil Raw error output.
+---@param issue_key string|nil Issue key for context.
+---@param opts table|nil Additional context such as subject_label/base_url.
+---@return string message Friendly error description.
 local function humanize_remote_error(err, issue_key, opts)
   opts = opts or {}
   local message = utils.trim(err or "")
@@ -287,6 +346,13 @@ local function humanize_remote_error(err, issue_key, opts)
   return string.format("Unexpected error while talking to Jira about %s: %s", subject_label, message)
 end
 
+---Check whether a referenced project exists, handling network/status errors.
+---@param project_key string|nil Project key extracted from an issue key.
+---@param base_url string Jira base URL.
+---@param auth string Basic auth header.
+---@param issue_key string|nil Issue key for context.
+---@param callback fun(exists:boolean|nil, err:string|nil) Called with existence flag or error.
+---@return nil
 local function check_project_exists(project_key, base_url, auth, issue_key, callback)
   if not project_key or project_key == "" then
     callback(
@@ -331,6 +397,12 @@ local function check_project_exists(project_key, base_url, auth, issue_key, call
   end)
 end
 
+---Provide a targeted explanation for a missing issue response.
+---@param issue_key string|nil Issue key that could not be fetched.
+---@param base_url string Jira base URL.
+---@param auth string Basic auth header.
+---@param callback fun(message:string) Called with resolved error string.
+---@return nil
 local function explain_missing_issue(issue_key, base_url, auth, callback)
   local subject_label = format_subject_label(issue_key)
   local project_key = parse_issue_key(issue_key)
@@ -357,6 +429,13 @@ local function explain_missing_issue(issue_key, base_url, auth, callback)
   end)
 end
 
+---Handle errors from the issue fetch request, mapping to readable messages.
+---@param err string|nil Raw error output.
+---@param issue_key string|nil Issue key requested.
+---@param base_url string Jira base URL.
+---@param auth string Basic auth header.
+---@param callback fun(issue:nil, err:string|nil) Called with nil issue and friendly error.
+---@return nil
 local function handle_fetch_issue_error(err, issue_key, base_url, auth, callback)
   local message = utils.trim(err or "")
   if looks_like_connection_problem(message) then
@@ -373,6 +452,11 @@ local function handle_fetch_issue_error(err, issue_key, base_url, auth, callback
   callback(nil, humanize_remote_error(message, issue_key, { base_url = base_url }))
 end
 
+---Fetch a single Jira issue and decode its payload.
+---@param issue_key string Issue key such as "ABC-123".
+---@param config table Plugin configuration containing API credentials and base URL.
+---@param callback fun(issue:table|nil, err:string|nil) Invoked with the parsed issue table or an error message.
+---@return nil
 function M.fetch_issue(issue_key, config, callback)
   local api_config = config.api or {}
   local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
@@ -423,6 +507,9 @@ function M.fetch_issue(issue_key, config, callback)
   end)
 end
 
+---Resolve the default JQL for the assigned issues popup.
+---@param config table|nil Plugin configuration.
+---@return string jql Trimmed JQL statement.
 local function assignment_jql(config)
   local assigned = (config and config.assigned_popup) or {}
   local jql = assigned.jql
@@ -430,6 +517,9 @@ local function assignment_jql(config)
   return utils.trim(jql)
 end
 
+---Clamp the configured page size to Jira's supported bounds.
+---@param size number|nil Desired max results.
+---@return integer limit Page size between 1 and 200.
 local function clamp_page_size(size)
   local limit = tonumber(size) or 50
   if limit < 1 then
@@ -441,11 +531,18 @@ local function clamp_page_size(size)
   return limit
 end
 
+---Resolve the max results setting for the assigned issues popup.
+---@param config table|nil Plugin configuration.
+---@return integer limit Page size to request.
 local function assignment_limit(config)
   local assigned = (config and config.assigned_popup) or {}
   return clamp_page_size(assigned.max_results)
 end
 
+---Map a Jira issue payload into a condensed summary for list display.
+---@param issue table Jira issue object.
+---@param base_url string Jira base URL.
+---@return table summary Simplified issue fields.
 local function issue_summary_entry(issue, base_url)
   local fields = issue.fields or {}
   if vim and vim.NIL then
@@ -469,6 +566,10 @@ local function issue_summary_entry(issue, base_url)
   }
 end
 
+---Filter and map assigned issues to summaries, omitting resolved/done items.
+---@param payload table Jira search response.
+---@param base_url string Jira base URL.
+---@return table[] issues Collection of simplified issue entries.
 local function map_assigned_issues(payload, base_url)
   local issues = {}
   local issue_list = payload.issues
@@ -499,6 +600,10 @@ local function map_assigned_issues(payload, base_url)
   return issues
 end
 
+---Map arbitrary search results to simplified summaries.
+---@param payload table Jira search response.
+---@param base_url string Jira base URL.
+---@return table[] issues Collection of simplified issue entries.
 local function map_search_issues(payload, base_url)
   local issues = {}
   local issue_list = payload.issues
@@ -511,6 +616,11 @@ local function map_search_issues(payload, base_url)
   return issues
 end
 
+---List unresolved issues assigned to the current user.
+---@param config table Plugin configuration containing API credentials and popup settings.
+---@param opts table|fun Result override such as pagination; or callback when opts omitted.
+---@param callback fun(result:table|nil, err:string|nil) Invoked with issues, totals, and pagination or an error message.
+---@return nil
 function M.fetch_assigned_issues(config, opts, callback)
   if type(opts) == "function" then
     callback = opts
@@ -592,6 +702,11 @@ function M.fetch_assigned_issues(config, opts, callback)
   end)
 end
 
+---Run an arbitrary JQL search and return a simplified issue list.
+---@param config table Plugin configuration containing API credentials and search defaults.
+---@param params table JQL query parameters (jql, pagination, fields, expand, next_page_token).
+---@param callback fun(result:table|nil, err:string|nil) Invoked with mapped search results or an error message.
+---@return nil
 function M.search_issues(config, params, callback)
   params = params or {}
   local jql = utils.trim(params.jql or "")
@@ -687,6 +802,9 @@ function M.search_issues(config, params, callback)
   end)
 end
 
+---Normalize mixed autocomplete values into a list of strings.
+---@param list table|string[]|nil Raw list from Jira autocomplete endpoints.
+---@return string[] normalized Flattened string values.
 local function normalize_string_list(list)
   local normalized = {}
   local source = type(list) == "table" and list or {}
@@ -703,6 +821,9 @@ local function normalize_string_list(list)
   return normalized
 end
 
+---Convert autocomplete payload arrays into string lists.
+---@param payload table|nil Raw autocomplete response.
+---@return table data Normalized fields/functions/keywords lists.
 local function map_autocomplete_data(payload)
   if type(payload) ~= "table" then
     return {}
@@ -714,6 +835,9 @@ local function map_autocomplete_data(payload)
   }
 end
 
+---Extract suggestion strings from a JQL suggestions response.
+---@param payload table|nil Jira autocomplete suggestions response.
+---@return string[] suggestions List of suggestion texts.
 local function map_suggestion_list(payload)
   local suggestions = {}
   local list = nil
@@ -737,6 +861,10 @@ local function map_suggestion_list(payload)
   return suggestions
 end
 
+---Retrieve autocomplete metadata for JQL fields, functions, and keywords.
+---@param config table Plugin configuration containing API credentials and base URL.
+---@param callback fun(data:table|nil, err:string|nil) Invoked with autocomplete data or an error message.
+---@return nil
 function M.fetch_jql_autocomplete(config, callback)
   local api_config = config.api or {}
   local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
@@ -776,6 +904,11 @@ function M.fetch_jql_autocomplete(config, callback)
   end)
 end
 
+---Fetch value suggestions for a specific JQL field and prefix.
+---@param config table Plugin configuration containing API credentials and base URL.
+---@param opts table|fun Options including `field`/`field_name` and `value`/`prefix`; or callback when opts omitted.
+---@param callback fun(result:table|nil, err:string|nil) Invoked with suggestion strings or an error message.
+---@return nil
 function M.fetch_jql_suggestions(config, opts, callback)
   opts = opts or {}
   if type(opts) == "function" then

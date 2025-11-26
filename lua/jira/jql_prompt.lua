@@ -1,3 +1,6 @@
+---Interactive floating JQL prompt with autocomplete and highlighting.
+-- Provides suggestion fetching, syntax highlighting, and keyboard shortcuts for composing queries.
+
 local api = require("jira.api")
 local utils = require("jira.utils")
 local popup = require("jira.popup")
@@ -29,6 +32,9 @@ local keyword_list = {
 }
 local operator_list = { "!", "~", "!=", ">=", "<=", "=", ">", "<" }
 
+---Read all text from a buffer, preserving newlines.
+---@param buf number Buffer handle.
+---@return string contents Entire buffer contents joined by newline.
 local function buffer_text(buf)
   if not buf or not vim.api.nvim_buf_is_valid(buf) then
     return ""
@@ -37,6 +43,10 @@ local function buffer_text(buf)
   return table.concat(lines, "\n")
 end
 
+---Get the current line under the cursor for a buffer/window.
+---@param buf number Buffer handle.
+---@param win number|nil Window handle; defaults to current window.
+---@return string line Current line text or empty string.
 local function line_at_cursor(buf, win)
   if not buf or not vim.api.nvim_buf_is_valid(buf) then
     return ""
@@ -50,6 +60,8 @@ local function line_at_cursor(buf, win)
   return line or ""
 end
 
+---Create syntax highlight groups for the JQL prompt.
+---@return nil
 local function ensure_highlights()
   if highlight_ready then
     return
@@ -76,6 +88,13 @@ local function ensure_highlights()
   highlight_ready = true
 end
 
+---Add a highlight entry to the prompt buffer.
+---@param buf number Buffer handle.
+---@param group string Highlight group name.
+---@param line number Line number (0-based).
+---@param start_col number Starting column (0-based).
+---@param end_col number Ending column (0-based, exclusive).
+---@return nil
 local function add_highlight(buf, group, line, start_col, end_col)
   if not buf or not vim.api.nvim_buf_is_valid(buf) then
     return
@@ -83,12 +102,23 @@ local function add_highlight(buf, group, line, start_col, end_col)
   vim.api.nvim_buf_add_highlight(buf, prompt_ns, group, line, start_col, end_col)
 end
 
+---Verify that keyword boundaries are surrounded by non-word characters.
+---@param text string Full line text.
+---@param s number Start index (1-based).
+---@param e number End index (1-based, exclusive).
+---@return boolean ok True when the match is isolated.
 local function boundaries_ok(text, s, e)
   local before_ok = s == 1 or text:sub(s - 1, s - 1):match("%W")
   local after_ok = e > #text or text:sub(e, e):match("%W")
   return before_ok and after_ok
 end
 
+---Highlight syntax tokens within a single JQL line.
+---@param buf number Buffer handle.
+---@param line string Line text to highlight.
+---@param line_nr number 0-based line index.
+---@param autocomplete table|nil Autocomplete data to highlight fields.
+---@return nil
 local function highlight_line(buf, line, line_nr, autocomplete)
   line_nr = line_nr or 0
   if not line or line == "" then
@@ -145,6 +175,10 @@ local function highlight_line(buf, line, line_nr, autocomplete)
   end
 end
 
+---Highlight every line in the prompt buffer.
+---@param buf number Buffer handle.
+---@param autocomplete table|nil Autocomplete payload for field highlights.
+---@return nil
 local function highlight_buffer(buf, autocomplete)
   if not buf or not vim.api.nvim_buf_is_valid(buf) then
     return
@@ -156,6 +190,10 @@ local function highlight_buffer(buf, autocomplete)
   end
 end
 
+---Apply stored shortcut highlight markers to a buffer.
+---@param buf number Buffer handle.
+---@param highlights table Highlight descriptors with group and ranges.
+---@return nil
 local function apply_shortcut_highlights(buf, highlights)
   if not buf or not vim.api.nvim_buf_is_valid(buf) then
     return
@@ -166,10 +204,17 @@ local function apply_shortcut_highlights(buf, highlights)
   end
 end
 
+---Escape characters for safe statusline/winbar display.
+---@param text string|nil Text to escape.
+---@return string escaped Escaped text.
 local function escape_status_component(text)
   return (text or ""):gsub("%%", "%%%%")
 end
 
+---Render contextual help text in the prompt window bar.
+---@param state table Prompt state object.
+---@param text string|nil Help message.
+---@return nil
 local function set_help(state, text)
   if not state or not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
     return
@@ -186,6 +231,10 @@ local function set_help(state, text)
   vim.api.nvim_win_set_option(state.win, "statusline", "")
 end
 
+---Compute dimensions for the prompt windows based on editor size and defaults.
+---@param config table|nil Plugin configuration.
+---@param default_value string|nil Initial query text.
+---@return table dims Width/height/position/border settings.
 local function build_dimensions(config, default_value)
   local width = math.min(math.max(50, math.floor(vim.o.columns * 0.65)), vim.o.columns - 2)
   local min_height = 6
@@ -208,6 +257,9 @@ local function build_dimensions(config, default_value)
   }
 end
 
+---Close the prompt windows and cleanup timers/autocmds.
+---@param state table Prompt state object.
+---@return nil
 local function close_prompt(state)
   if not state or state.closed then
     return
@@ -260,6 +312,9 @@ local function close_prompt(state)
   state.container_win = nil
 end
 
+---Parse a Jira autocomplete response into a list of suggestion strings.
+---@param resp table|string[]|nil Raw suggestion response.
+---@return string[] items Suggestion text entries.
 local function parse_suggestion_response(resp)
   local items = {}
   local list = nil
@@ -284,6 +339,11 @@ local function parse_suggestion_response(resp)
   return items
 end
 
+---Feed completion candidates into Vim's completion with a prefix.
+---@param state table Prompt state.
+---@param prefix string Text already typed by the user.
+---@param items string[] Completion entries.
+---@return nil
 local function apply_completions(state, prefix, items)
   if not state or not state.win or not vim.api.nvim_win_is_valid(state.win) then
     return
@@ -311,6 +371,11 @@ local function apply_completions(state, prefix, items)
   pcall(vim.fn.complete, start_col, completions)
 end
 
+---Detect the field/value context around the cursor for suggestions.
+---@param line string Current line text.
+---@param col number 1-based column position.
+---@return string|nil field Field name when found.
+---@return string|nil prefix Current partial value being typed.
 local function find_value_context(line, col)
   if not line or line == "" then
     return nil
@@ -329,6 +394,10 @@ local function find_value_context(line, col)
   return nil
 end
 
+---Request or reuse JQL value suggestions based on cursor context.
+---@param state table Prompt state.
+---@param line string Current cursor line text.
+---@return nil
 local function maybe_suggest_field_values(state, line)
   if not state or not state.win then
     return
@@ -381,6 +450,10 @@ local function maybe_suggest_field_values(state, line)
   )
 end
 
+---Offer field name completions when typing a predicate.
+---@param state table Prompt state.
+---@param line string Current line text.
+---@return nil
 local function maybe_suggest_fields(state, line)
   if not state or not state.autocomplete or not state.autocomplete.fields then
     return
@@ -413,6 +486,12 @@ local function maybe_suggest_fields(state, line)
   apply_completions(state, prefix, matches)
 end
 
+---Attach listeners for highlighting, completion, and lifecycle events.
+---@param state table Prompt state.
+---@param on_submit fun(query:string) Called when the user submits the query.
+---@param on_change fun(text:string)|nil Called as text changes.
+---@param help_text string|nil Help message to display.
+---@return nil
 local function attach_listeners(state, on_submit, on_change, help_text)
   vim.api.nvim_clear_autocmds({ group = completion_group, buffer = state.buf })
   vim.api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, {
@@ -458,6 +537,9 @@ local function attach_listeners(state, on_submit, on_change, help_text)
   vim.keymap.set({ "i", "n" }, "?", open_help_popup, key_opts)
 end
 
+---Fetch autocomplete metadata for fields/functions/keywords.
+---@param state table Prompt state.
+---@return nil
 local function fetch_autocomplete(state)
   api.fetch_jql_autocomplete(state.config, function(data, err)
     vim.schedule(function()
@@ -474,6 +556,9 @@ local function fetch_autocomplete(state)
   end)
 end
 
+---Open an interactive floating window to collect a JQL query with autocomplete.
+---@param opts table|nil Options such as default text, callbacks, and plugin config.
+---@return boolean opened True when the prompt was successfully created.
 function JQLPrompt.open(opts)
   opts = opts or {}
   local default_value = opts.default or ""
