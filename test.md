@@ -1,5 +1,3 @@
-# jira.nvim Coloration Test Matrix
-
 The following synthetic Jira issues exercise every highlight used in the popup. Use them (or clone their field combinations) when seeding fixtures or mocking API responses.
 
 ## Issue Catalog

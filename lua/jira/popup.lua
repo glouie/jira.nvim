@@ -5,7 +5,53 @@ local Popup = {}
 local popup_ns = vim.api.nvim_create_namespace("jira.nvim.popup")
 local list_ns = vim.api.nvim_create_namespace("jira.nvim.popup.list")
 local popup_highlights_ready = false
-local nav_hint = "Nav: j/k scroll • gg top • G bottom • Tab/S-Tab switch panes • / search (n/N repeat) • <C-n>/<C-p> next/prev issue • Enter/Cmd/Ctrl+Click open URL • q/Esc close • o open URL"
+local shortcut_categories_for_bar = {
+  exit = true,
+  submit = true,
+  open = true,
+  help = true,
+}
+local shortcut_sections = {
+  issue = {
+    title = "Issue popup",
+    entries = {
+      { keys = "q/Esc", description = "Close popup", category = "exit" },
+      { keys = "j/k, gg, G", description = "Scroll content", category = "nav" },
+      { keys = "Tab/S-Tab", description = "Switch panes", category = "nav" },
+      { keys = "/", description = "Search within pane", category = "nav" },
+      { keys = "n/N", description = "Repeat last search", category = "nav" },
+      { keys = "<C-n>/<C-p>", description = "Next/previous issue", category = "nav" },
+      { keys = "<CR>/Cmd/Ctrl+Click", description = "Open URL under cursor", category = "open" },
+      { keys = "o", description = "Open issue in browser", category = "open" },
+      { keys = "?", description = "Open help popup", category = "help" },
+    },
+  },
+  list = {
+    title = "Issue list popup",
+    entries = {
+      { keys = "q/Esc", description = "Close popup", category = "exit" },
+      { keys = "j/k/<Up>/<Down>", description = "Move selection", category = "nav" },
+      { keys = "<C-f>/<C-b>", description = "Next/previous page", category = "nav" },
+      { keys = "<CR>", description = "Open selected issue", category = "open" },
+      { keys = "?", description = "Open help popup", category = "help" },
+    },
+  },
+  jql = {
+    title = "JQL search popup",
+    entries = {
+      { keys = "q/<C-c>", description = "Cancel search", category = "exit" },
+      { keys = "<C-n>/<C-p>", description = "Navigate suggestions", category = "nav" },
+      { keys = "<CR>/<C-y>", description = "Submit query", category = "submit" },
+      { keys = "?", description = "Open help popup", category = "help" },
+    },
+  },
+  help = {
+    title = "Help popup",
+    entries = {
+      { keys = "q/Esc", description = "Close help", category = "exit" },
+    },
+  },
+}
 local format_issue_url
 local user_highlight_cache = {}
 local user_highlight_counter = 0
@@ -69,6 +115,7 @@ local severity_rules = {
   { level = 3, keywords = { "sev2", "sev-2", "medium" } },
   { level = 4, keywords = { "sev3", "sev-3", "low", "minor", "trivial" } },
 }
+local fill_buffer
 
 local function ensure_popup_highlights()
   if popup_highlights_ready then
@@ -248,6 +295,91 @@ local function highlight_full_line(store, group, line, text)
     return
   end
   add_highlight_entry(store, group, line, 0, #text)
+end
+
+local function shortcut_bar_lines(section_key, width)
+  local section = shortcut_sections[section_key] or {}
+  local actions = {}
+  for _, entry in ipairs(section.entries or {}) do
+    if shortcut_categories_for_bar[entry.category] then
+      table.insert(actions, entry)
+    end
+  end
+  local segments = {}
+  for _, entry in ipairs(actions) do
+    if entry.description and entry.description ~= "" then
+      table.insert(segments, string.format("%s %s", entry.keys, entry.description))
+    elseif entry.keys then
+      table.insert(segments, entry.keys)
+    end
+  end
+  if #segments == 0 then
+    table.insert(segments, "No shortcuts available")
+  end
+  local lines = {}
+  local highlights = {}
+  local wrap_width = math.max(20, width or 20)
+  local current = ""
+  for _, segment in ipairs(segments) do
+    local piece = (current == "" and segment) or (" • " .. segment)
+    if #current + #piece > wrap_width then
+      table.insert(lines, current)
+      highlight_full_line(highlights, "JiraPopupUrlBar", #lines - 1, current)
+      current = segment
+    else
+      current = current .. piece
+    end
+  end
+  if current ~= "" then
+    table.insert(lines, current)
+    highlight_full_line(highlights, "JiraPopupUrlBar", #lines - 1, current)
+  end
+  return lines, highlights
+end
+
+local function help_popup_lines(width)
+  local lines = {}
+  local highlights = {}
+  local available_width = math.max(30, (width or 80) - 4)
+  for _, key in ipairs({ "issue", "list", "jql" }) do
+    local section = shortcut_sections[key]
+    if section and section.entries and #section.entries > 0 then
+      table.insert(lines, section.title or key)
+      highlight_full_line(highlights, "JiraPopupSection", #lines - 1, lines[#lines])
+      for _, entry in ipairs(section.entries) do
+        local keys = entry.keys or ""
+        local desc = entry.description or ""
+        local wrap = utils.wrap_text(desc, math.max(10, available_width - #keys - 3))
+        if #wrap == 0 then
+          wrap = { "" }
+        end
+        for idx, part in ipairs(wrap) do
+          local prefix = (idx == 1) and (keys .. " - ") or string.rep(" ", #keys + 3)
+          local line = prefix .. part
+          table.insert(lines, line)
+          local line_idx = #lines - 1
+          if keys ~= "" and idx == 1 then
+            add_highlight_entry(highlights, "JiraPopupLabel", line_idx, 0, #keys)
+          end
+          highlight_full_line(highlights, "JiraPopupDetailsBody", line_idx, line)
+        end
+      end
+      table.insert(lines, "")
+    end
+  end
+  if #lines > 0 and lines[#lines] == "" then
+    table.remove(lines, #lines)
+  end
+  return lines, highlights
+end
+
+function Popup.ensure_highlights()
+  ensure_popup_highlights()
+end
+
+function Popup.shortcut_bar_lines(section_key, width)
+  ensure_popup_highlights()
+  return shortcut_bar_lines(section_key, width)
 end
 
 local function append_section(target_lines, target_highlights, section_lines, section_highlights)
@@ -692,6 +824,7 @@ end
 local focus_group = vim.api.nvim_create_augroup("JiraPopupGuard", { clear = true })
 local size_group = vim.api.nvim_create_augroup("JiraPopupSizeGuard", { clear = true })
 local list_group = vim.api.nvim_create_augroup("JiraPopupList", { clear = true })
+local help_group = vim.api.nvim_create_augroup("JiraPopupHelp", { clear = true })
 local yank_group = vim.api.nvim_create_augroup("JiraPopupYankFeedback", { clear = true })
 
 local state = {
@@ -727,6 +860,18 @@ local list_state = {
   source = nil,
   search_active = false,
   selection_before_search = nil,
+  container_win = nil,
+  container_buf = nil,
+  bar_win = nil,
+  bar_buf = nil,
+}
+
+local help_state = {
+  container_win = nil,
+  win = nil,
+  bar_win = nil,
+  buf = nil,
+  bar_buf = nil,
 }
 
 local function clear_list_autocmd()
@@ -736,14 +881,26 @@ local function clear_list_autocmd()
   end
 end
 
+local function close_window(win)
+  if win and vim.api.nvim_win_is_valid(win) then
+    vim.api.nvim_win_close(win, true)
+  end
+end
+
+local function wipe_buffer(buf)
+  if buf and vim.api.nvim_buf_is_valid(buf) then
+    pcall(vim.api.nvim_buf_delete, buf, { force = true })
+  end
+end
+
 local function close_issue_list()
   clear_list_autocmd()
-  if list_state.win and vim.api.nvim_win_is_valid(list_state.win) then
-    pcall(vim.api.nvim_win_close, list_state.win, true)
-  end
-  if list_state.buf and vim.api.nvim_buf_is_valid(list_state.buf) then
-    pcall(vim.api.nvim_buf_delete, list_state.buf, { force = true })
-  end
+  close_window(list_state.bar_win)
+  close_window(list_state.win)
+  close_window(list_state.container_win)
+  wipe_buffer(list_state.bar_buf)
+  wipe_buffer(list_state.buf)
+  wipe_buffer(list_state.container_buf)
   list_state = {
     win = nil,
     buf = nil,
@@ -759,6 +916,10 @@ local function close_issue_list()
     source = nil,
     search_active = false,
     selection_before_search = nil,
+    container_win = nil,
+    container_buf = nil,
+    bar_win = nil,
+    bar_buf = nil,
   }
 end
 
@@ -1135,21 +1296,26 @@ local function repeat_popup_search(target_win, backward)
   end
 end
 
-local function close_window(win)
-  if win and vim.api.nvim_win_is_valid(win) then
-    vim.api.nvim_win_close(win, true)
-  end
-end
-
-local function wipe_buffer(buf)
-  if buf and vim.api.nvim_buf_is_valid(buf) then
-    pcall(vim.api.nvim_buf_delete, buf, { force = true })
-  end
+local function close_help_popup()
+  vim.api.nvim_clear_autocmds({ group = help_group })
+  close_window(help_state.bar_win)
+  close_window(help_state.win)
+  close_window(help_state.container_win)
+  wipe_buffer(help_state.bar_buf)
+  wipe_buffer(help_state.buf)
+  help_state = {
+    container_win = nil,
+    win = nil,
+    bar_win = nil,
+    buf = nil,
+    bar_buf = nil,
+  }
 end
 
 function Popup.close()
   clear_focus_guard()
   clear_size_guard()
+  close_help_popup()
   close_window(state.main_win)
   close_window(state.sidebar_win)
   close_window(state.summary_win)
@@ -1185,6 +1351,7 @@ end
 function Popup.close_all()
   Popup.close()
   close_issue_list()
+  close_help_popup()
 end
 
 local function calculate_dimensions(config)
@@ -1235,6 +1402,107 @@ local function list_dimensions(config, layout)
     height = height,
     col = col,
     row = row,
+  }
+end
+
+function Popup.show_help(config)
+  close_help_popup()
+  ensure_popup_highlights()
+  config = config or {}
+  local dims = calculate_dimensions(config)
+  local content_lines, content_highlights = help_popup_lines(dims.width)
+  local bar_lines, bar_highlights = shortcut_bar_lines("help", dims.width)
+  local bar_height = math.max(1, #bar_lines)
+  local content_height = math.max(6, dims.height - bar_height)
+
+  local container_buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(container_buf, 0, -1, false, { "" })
+  vim.bo[container_buf].bufhidden = "wipe"
+  vim.bo[container_buf].modifiable = false
+  vim.bo[container_buf].filetype = "jira_popup_container"
+
+  local border = (config.popup and config.popup.border) or "rounded"
+  local container_win = vim.api.nvim_open_win(container_buf, false, {
+    relative = "editor",
+    width = dims.width,
+    height = dims.height,
+    col = dims.col,
+    row = dims.row,
+    style = "minimal",
+    border = border,
+    title = "jira.nvim shortcuts",
+    title_pos = "center",
+    focusable = false,
+    zindex = 70,
+  })
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  local bar_buf = vim.api.nvim_create_buf(false, true)
+  fill_buffer(buf, content_lines, { filetype = "jira_popup_help" })
+  fill_buffer(bar_buf, bar_lines)
+  apply_highlights(buf, content_lines, content_highlights, nil, nil)
+  apply_highlights(bar_buf, bar_lines, bar_highlights, nil, nil)
+
+  local content_win = vim.api.nvim_open_win(buf, true, {
+    relative = "win",
+    win = container_win,
+    width = dims.width,
+    height = content_height,
+    col = 0,
+    row = 0,
+    style = "minimal",
+    border = "none",
+    zindex = 80,
+  })
+  vim.api.nvim_win_set_option(content_win, "wrap", true)
+  vim.api.nvim_win_set_option(
+    content_win,
+    "winhl",
+    "Normal:JiraPopupDetailsBody,NormalNC:JiraPopupDetailsBody"
+  )
+
+  local bar_win = vim.api.nvim_open_win(bar_buf, false, {
+    relative = "win",
+    win = container_win,
+    width = dims.width,
+    height = bar_height,
+    col = 0,
+    row = content_height,
+    style = "minimal",
+    border = "none",
+    focusable = false,
+    zindex = 80,
+  })
+  vim.api.nvim_win_set_option(bar_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
+  vim.api.nvim_win_set_option(bar_win, "wrap", true)
+  lock_window_size(container_win)
+  lock_window_size(content_win)
+  lock_window_size(bar_win)
+
+  local key_opts = { buffer = buf, nowait = true, silent = true }
+  vim.keymap.set("n", "q", close_help_popup, key_opts)
+  vim.keymap.set("n", "<Esc>", close_help_popup, key_opts)
+
+  vim.api.nvim_clear_autocmds({ group = help_group })
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = help_group,
+    callback = function(args)
+      local closed = tonumber(args.match)
+      if not closed then
+        return
+      end
+      if closed == content_win or closed == bar_win or closed == container_win then
+        close_help_popup()
+      end
+    end,
+  })
+
+  help_state = {
+    container_win = container_win,
+    win = content_win,
+    bar_win = bar_win,
+    buf = buf,
+    bar_buf = bar_buf,
   }
 end
 
@@ -1817,18 +2085,7 @@ local function url_bar_lines(issue, config, width)
 end
 
 local function help_bar_lines(width)
-  local lines = {}
-  local highlights = {}
-  local wrap_width = math.max(20, width or 20)
-  for _, line in ipairs(utils.wrap_text(nav_hint, wrap_width)) do
-    table.insert(lines, line)
-    highlight_full_line(highlights, "JiraPopupUrlBar", #lines - 1, line)
-  end
-  if #lines == 0 then
-    table.insert(lines, nav_hint)
-    highlight_full_line(highlights, "JiraPopupUrlBar", 0, nav_hint)
-  end
-  return lines, highlights
+  return shortcut_bar_lines("issue", width)
 end
 
 local function format_popup_title(issue_key, nav)
@@ -1861,7 +2118,7 @@ local function sanitize_lines(lines)
   return sanitized
 end
 
-local function fill_buffer(buf, lines, opts)
+function fill_buffer(buf, lines, opts)
   opts = opts or {}
   lines = sanitize_lines(lines)
   vim.bo[buf].modifiable = true
@@ -1943,6 +2200,9 @@ local function map_popup_keys(buf, issue, config, nav_controls)
   local function open_link_at_cursor(trigger)
     open_url_under_cursor(buf, config, trigger)
   end
+  local function open_help_popup()
+    Popup.show_help(config)
+  end
   vim.keymap.set("n", "q", close_popup, opts)
   vim.keymap.set("n", "<Esc>", close_popup, opts)
   vim.keymap.set("n", "o", open_in_browser, opts)
@@ -1954,6 +2214,7 @@ local function map_popup_keys(buf, issue, config, nav_controls)
   vim.keymap.set("n", "N", repeat_search_backward, opts)
   vim.keymap.set("n", "<Tab>", focus_next, opts)
   vim.keymap.set("n", "<S-Tab>", focus_prev, opts)
+  vim.keymap.set("n", "?", open_help_popup, opts)
   if vim.fn.has("mac") == 1 then
     vim.keymap.set("n", "<D-LeftMouse>", function()
       open_link_at_cursor("<D-LeftMouse>")
@@ -2050,12 +2311,12 @@ function Popup.render_issue_list(issues, config, opts)
   local border = layout_cfg.border or (config.popup and config.popup.border) or "rounded"
   local title = opts.title or layout_cfg.title or "Assigned Issues"
 
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[buf].bufhidden = "wipe"
-  vim.bo[buf].swapfile = false
-  vim.bo[buf].filetype = "jiraissue-list"
+  local container_buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[container_buf].bufhidden = "wipe"
+  vim.bo[container_buf].modifiable = false
+  vim.bo[container_buf].filetype = "jira_popup_container"
 
-  local win = vim.api.nvim_open_win(buf, true, {
+  local container_win = vim.api.nvim_open_win(container_buf, false, {
     relative = "editor",
     width = dims.width,
     height = dims.height,
@@ -2063,12 +2324,55 @@ function Popup.render_issue_list(issues, config, opts)
     row = dims.row,
     style = "minimal",
     border = border,
+    title = title,
+    title_pos = "center",
+    focusable = false,
   })
 
-  vim.api.nvim_win_set_option(win, "wrap", false)
+  local bar_lines, bar_highlights = shortcut_bar_lines("list", dims.width)
+  local bar_height = math.max(1, #bar_lines)
+  local content_height = math.max(4, dims.height - bar_height)
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].filetype = "jiraissue-list"
+
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "win",
+    win = container_win,
+    width = dims.width,
+    height = content_height,
+    col = 0,
+    row = 0,
+    style = "minimal",
+    border = "none",
+  })
+
+  vim.api.nvim_win_set_option(win, "wrap", true)
   vim.api.nvim_win_set_option(win, "winhl", "Normal:JiraPopupDetailsBody,FloatBorder:JiraPopupDetailsHeader")
 
-  local layout = build_issue_list_lines(issues, dims, {
+  local bar_buf = vim.api.nvim_create_buf(false, true)
+  fill_buffer(bar_buf, bar_lines)
+  apply_highlights(bar_buf, bar_lines, bar_highlights, nil, nil)
+  local bar_win = vim.api.nvim_open_win(bar_buf, false, {
+    relative = "win",
+    win = container_win,
+    width = dims.width,
+    height = bar_height,
+    col = 0,
+    row = content_height,
+    style = "minimal",
+    border = "none",
+    focusable = false,
+  })
+  vim.api.nvim_win_set_option(bar_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
+  vim.api.nvim_win_set_option(bar_win, "wrap", true)
+
+  local content_dims = vim.deepcopy(dims)
+  content_dims.height = content_height
+
+  local layout = build_issue_list_lines(issues, content_dims, {
     title = title,
     pagination = opts.pagination,
     subtitle = opts.subtitle,
@@ -2105,6 +2409,10 @@ function Popup.render_issue_list(issues, config, opts)
     source = opts.source,
     search_active = false,
     selection_before_search = nil,
+    container_win = container_win,
+    container_buf = container_buf,
+    bar_win = bar_win,
+    bar_buf = bar_buf,
   }
 
   if list_state.selection then
@@ -2116,7 +2424,10 @@ function Popup.render_issue_list(issues, config, opts)
     group = list_group,
     callback = function(args)
       local closed = tonumber(args.match)
-      if closed and list_state.win and closed == list_state.win then
+      if not closed then
+        return
+      end
+      if closed == list_state.win or closed == list_state.container_win or closed == list_state.bar_win then
         close_issue_list()
       end
     end,
@@ -2187,6 +2498,9 @@ function Popup.render_issue_list(issues, config, opts)
     goto_issue_list_page(-1)
   end, key_opts)
   vim.keymap.set("n", "<CR>", activate_current_issue, key_opts)
+  vim.keymap.set("n", "?", function()
+    Popup.show_help(config)
+  end, key_opts)
 
   return win
 end
@@ -2362,52 +2676,55 @@ function Popup.render(issue, config, context)
     apply_highlights(url_buf, url_content, url_highlights, config.issue_pattern, ignored_projects)
     apply_highlights(help_buf, help_content, help_highlights, config.issue_pattern, ignored_projects)
 
-    local summary_win = vim.api.nvim_open_win(summary_buf, false, {
-      relative = "win",
-      win = container_win,
-      width = summary_width,
-      height = summary_height,
+  local summary_win = vim.api.nvim_open_win(summary_buf, false, {
+    relative = "win",
+    win = container_win,
+    width = summary_width,
+    height = summary_height,
       col = summary_margin_left,
       row = 0,
       style = "minimal",
       border = "none",
-      zindex = 60,
-      focusable = false,
-    })
-    track_win(summary_win)
-    vim.api.nvim_win_set_option(summary_win, "winhl", "Normal:JiraPopupSummaryBackground,NormalNC:JiraPopupSummaryBackground")
+    zindex = 60,
+    focusable = false,
+  })
+  track_win(summary_win)
+  vim.api.nvim_win_set_option(summary_win, "wrap", true)
+  vim.api.nvim_win_set_option(summary_win, "winhl", "Normal:JiraPopupSummaryBackground,NormalNC:JiraPopupSummaryBackground")
 
-    local main_win = vim.api.nvim_open_win(main_buf, true, {
-      relative = "win",
-      win = container_win,
+  local main_win = vim.api.nvim_open_win(main_buf, true, {
+    relative = "win",
+    win = container_win,
       width = main_width_with_margin,
       height = scrollable_height,
       col = main_margin_left,
       row = summary_height,
       style = "minimal",
-      border = "none",
-      zindex = 60,
-    })
-    track_win(main_win)
-    vim.api.nvim_win_set_option(main_win, "conceallevel", 0)
+    border = "none",
+    zindex = 60,
+  })
+  track_win(main_win)
+  vim.api.nvim_win_set_option(main_win, "wrap", true)
+  vim.api.nvim_win_set_option(main_win, "conceallevel", 0)
 
-    local sidebar_win = vim.api.nvim_open_win(sidebar_buf, false, {
-      relative = "win",
-      win = container_win,
+  local sidebar_win = vim.api.nvim_open_win(sidebar_buf, false, {
+    relative = "win",
+    win = container_win,
       width = sidebar_width_with_margin,
       height = scrollable_height,
       col = main_width + pane_gap + sidebar_margin_left,
       row = summary_height,
       style = "minimal",
-      border = "none",
-      zindex = 60,
-    })
-    track_win(sidebar_win)
-    vim.api.nvim_win_set_option(sidebar_win, "conceallevel", 0)
-    vim.api.nvim_win_set_option(sidebar_win, "winhl", "Normal:JiraPopupDetailsBody,NormalNC:JiraPopupDetailsBody")
+    border = "none",
+    zindex = 60,
+  })
+  track_win(sidebar_win)
+  vim.api.nvim_win_set_option(sidebar_win, "wrap", true)
+  vim.api.nvim_win_set_option(sidebar_win, "conceallevel", 0)
+  vim.api.nvim_win_set_option(sidebar_win, "winhl", "Normal:JiraPopupDetailsBody,NormalNC:JiraPopupDetailsBody")
 
-    local url_win = vim.api.nvim_open_win(url_buf, false, {
-      relative = "win",
+  local url_win = vim.api.nvim_open_win(url_buf, false, {
+    relative = "win",
       win = container_win,
       width = url_width,
       height = url_bar_height,
@@ -2415,14 +2732,15 @@ function Popup.render(issue, config, context)
       row = content_height + vertical_gap,
       style = "minimal",
       border = "none",
-      zindex = 60,
-    })
-    track_win(url_win)
-    vim.api.nvim_win_set_option(url_win, "conceallevel", 0)
-    vim.api.nvim_win_set_option(url_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
+    zindex = 60,
+  })
+  track_win(url_win)
+  vim.api.nvim_win_set_option(url_win, "wrap", true)
+  vim.api.nvim_win_set_option(url_win, "conceallevel", 0)
+  vim.api.nvim_win_set_option(url_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
 
-    local help_win = vim.api.nvim_open_win(help_buf, false, {
-      relative = "win",
+  local help_win = vim.api.nvim_open_win(help_buf, false, {
+    relative = "win",
       win = container_win,
       width = url_width,
       height = help_bar_height,
@@ -2431,11 +2749,12 @@ function Popup.render(issue, config, context)
       style = "minimal",
       border = "none",
       zindex = 60,
-      focusable = false,
-    })
-    track_win(help_win)
-    vim.api.nvim_win_set_option(help_win, "conceallevel", 0)
-    vim.api.nvim_win_set_option(help_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
+    focusable = false,
+  })
+  track_win(help_win)
+  vim.api.nvim_win_set_option(help_win, "wrap", true)
+  vim.api.nvim_win_set_option(help_win, "conceallevel", 0)
+  vim.api.nvim_win_set_option(help_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
 
     lock_window_size(summary_win)
     lock_window_size(main_win)

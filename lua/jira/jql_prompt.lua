@@ -1,5 +1,6 @@
 local api = require("jira.api")
 local utils = require("jira.utils")
+local popup = require("jira.popup")
 
 local JQLPrompt = {}
 
@@ -7,7 +8,8 @@ local prompt_ns = vim.api.nvim_create_namespace("jira.nvim.jql")
 local hint_ns = vim.api.nvim_create_namespace("jira.nvim.jql.hint")
 local highlight_ready = false
 local default_help = "Example: project = ABC AND status in ('In Progress', 'To Do') ORDER BY updated DESC"
-local default_footer = "Esc Normal | <C-c>/q exit | <C-n>/<C-p> navigate | <CR>/<C-y> submit | use normal edits to yank/clear"
+local default_footer = ""
+local shortcut_ns = vim.api.nvim_create_namespace("jira.nvim.jql.shortcuts")
 local completion_group = vim.api.nvim_create_augroup("jira.nvim.jql.completion", { clear = true })
 local keyword_list = {
   "AND",
@@ -154,37 +156,45 @@ local function highlight_buffer(buf, autocomplete)
   end
 end
 
-local function set_help(buf, text)
-  vim.api.nvim_buf_clear_namespace(buf, hint_ns, 0, -1)
-  if (not text or text == "") and (not default_footer or default_footer == "") then
+local function apply_shortcut_highlights(buf, highlights)
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
     return
   end
-  local line = math.max(0, vim.api.nvim_buf_line_count(buf) - 1)
-  local virt_lines = {}
+  vim.api.nvim_buf_clear_namespace(buf, shortcut_ns, 0, -1)
+  for _, mark in ipairs(highlights or {}) do
+    vim.api.nvim_buf_add_highlight(buf, shortcut_ns, mark.group, mark.line, mark.start_col, mark.end_col)
+  end
+end
+
+local function escape_status_component(text)
+  return (text or ""):gsub("%%", "%%%%")
+end
+
+local function set_help(state, text)
+  if not state or not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
+    return
+  end
+  vim.api.nvim_buf_clear_namespace(state.buf, hint_ns, 0, -1)
+  if not state.win or not vim.api.nvim_win_is_valid(state.win) then
+    return
+  end
+  local winbar = ""
   if text and text ~= "" then
-    table.insert(virt_lines, { { text, "Comment" } })
+    winbar = table.concat({ "%#Comment# ", escape_status_component(text), " %*" })
   end
-  if default_footer and default_footer ~= "" then
-    table.insert(virt_lines, { { default_footer, "Comment" } })
-  end
-  if #virt_lines == 0 then
-    return
-  end
-  vim.api.nvim_buf_set_extmark(buf, hint_ns, line, 0, {
-    virt_lines = virt_lines,
-    virt_lines_above = false,
-  })
+  vim.api.nvim_win_set_option(state.win, "winbar", winbar)
+  vim.api.nvim_win_set_option(state.win, "statusline", "")
 end
 
 local function build_dimensions(config, default_value)
   local width = math.min(math.max(50, math.floor(vim.o.columns * 0.65)), vim.o.columns - 2)
-  local min_height = 4
-  local max_height = math.max(min_height, math.floor(vim.o.lines * 0.35))
+  local min_height = 6
+  local max_height = math.max(min_height, math.floor(vim.o.lines * 0.5))
   local default_lines = 1
   if default_value and default_value ~= "" then
     default_lines = #vim.split(default_value, "\n", { trimempty = false })
   end
-  local desired = math.min(max_height, math.max(min_height, default_lines + 2))
+  local desired = math.min(max_height, math.max(min_height, default_lines + 4))
   local height = desired
   local col = math.floor((vim.o.columns - width) / 2)
   local row = math.floor((vim.o.lines - height) / 2)
@@ -227,11 +237,27 @@ local function close_prompt(state)
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     pcall(vim.api.nvim_win_close, state.win, true)
   end
+  if state.bar_win and vim.api.nvim_win_is_valid(state.bar_win) then
+    pcall(vim.api.nvim_win_close, state.bar_win, true)
+  end
+  if state.container_win and vim.api.nvim_win_is_valid(state.container_win) then
+    pcall(vim.api.nvim_win_close, state.container_win, true)
+  end
   if buf_valid then
     pcall(vim.api.nvim_buf_delete, state.buf, { force = true })
   end
+  if state.bar_buf and vim.api.nvim_buf_is_valid(state.bar_buf) then
+    pcall(vim.api.nvim_buf_delete, state.bar_buf, { force = true })
+  end
+  if state.container_buf and vim.api.nvim_buf_is_valid(state.container_buf) then
+    pcall(vim.api.nvim_buf_delete, state.container_buf, { force = true })
+  end
   state.buf = nil
   state.win = nil
+  state.bar_buf = nil
+  state.bar_win = nil
+  state.container_buf = nil
+  state.container_win = nil
 end
 
 local function parse_suggestion_response(resp)
@@ -387,7 +413,7 @@ local function maybe_suggest_fields(state, line)
   apply_completions(state, prefix, matches)
 end
 
-local function attach_listeners(state, on_submit, on_change)
+local function attach_listeners(state, on_submit, on_change, help_text)
   vim.api.nvim_clear_autocmds({ group = completion_group, buffer = state.buf })
   vim.api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, {
     group = completion_group,
@@ -395,6 +421,9 @@ local function attach_listeners(state, on_submit, on_change)
     callback = function()
       local cursor_line = line_at_cursor(state.buf, state.win)
       highlight_buffer(state.buf, state.autocomplete)
+      if help_text then
+        set_help(state, help_text)
+      end
       if on_change then
         on_change(buffer_text(state.buf))
       end
@@ -415,7 +444,10 @@ local function attach_listeners(state, on_submit, on_change)
     close_prompt(state)
     on_submit(text)
   end
-  vim.keymap.set({ "i", "n" }, "<CR>", submit_query, key_opts)
+  local function open_help_popup()
+    popup.show_help(state.config)
+  end
+  vim.keymap.set("n", "<CR>", submit_query, key_opts)
   vim.keymap.set({ "i", "n" }, "<C-y>", submit_query, key_opts)
   vim.keymap.set({ "i", "n" }, "<C-c>", function()
     close_prompt(state)
@@ -423,6 +455,7 @@ local function attach_listeners(state, on_submit, on_change)
   vim.keymap.set("n", "q", function()
     close_prompt(state)
   end, key_opts)
+  vim.keymap.set({ "i", "n" }, "?", open_help_popup, key_opts)
 end
 
 local function fetch_autocomplete(state)
@@ -452,6 +485,8 @@ function JQLPrompt.open(opts)
   local initial_mode = vim.api.nvim_get_mode().mode
   local forced_insert = not (initial_mode == "i" or initial_mode == "ic")
 
+  popup.ensure_highlights()
+
   ensure_highlights()
 
   local buf = vim.api.nvim_create_buf(false, true)
@@ -459,7 +494,16 @@ function JQLPrompt.open(opts)
     return false
   end
   local dims = build_dimensions(config, default_value)
-  local ok, win = pcall(vim.api.nvim_open_win, buf, true, {
+  local bar_lines, bar_highlights = popup.shortcut_bar_lines("jql", dims.width)
+  local bar_height = math.max(1, #bar_lines)
+  local content_height = math.max(3, dims.height - bar_height)
+
+  local container_buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[container_buf].bufhidden = "wipe"
+  vim.bo[container_buf].modifiable = false
+  vim.bo[container_buf].filetype = "jira_popup_container"
+
+  local ok, container_win = pcall(vim.api.nvim_open_win, container_buf, false, {
     relative = "editor",
     width = dims.width,
     height = dims.height,
@@ -469,13 +513,57 @@ function JQLPrompt.open(opts)
     border = dims.border,
     title = "JQL Search",
     title_pos = "center",
+    focusable = false,
   })
-  if not ok or not win then
+  if not ok or not container_win then
     pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    pcall(vim.api.nvim_buf_delete, container_buf, { force = true })
     return false
   end
-  vim.api.nvim_win_set_option(win, "wrap", false)
+
+  local ok_content, win = pcall(vim.api.nvim_open_win, buf, true, {
+    relative = "win",
+    win = container_win,
+    width = dims.width,
+    height = content_height,
+    col = 0,
+    row = 0,
+    style = "minimal",
+    border = "none",
+  })
+  if not ok_content or not win then
+    pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    close_prompt({ win = container_win, buf = container_buf })
+    return false
+  end
+  vim.api.nvim_win_set_option(win, "wrap", true)
   vim.api.nvim_win_set_option(win, "winhl", "Normal:JiraPopupDetailsBody,FloatBorder:JiraPopupDetailsHeader")
+
+  local bar_buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[bar_buf].bufhidden = "wipe"
+  vim.bo[bar_buf].modifiable = true
+  vim.api.nvim_buf_set_lines(bar_buf, 0, -1, false, bar_lines)
+  vim.bo[bar_buf].modifiable = false
+  apply_shortcut_highlights(bar_buf, bar_highlights)
+  local bar_win = vim.api.nvim_open_win(bar_buf, false, {
+    relative = "win",
+    win = container_win,
+    width = dims.width,
+    height = bar_height,
+    col = 0,
+    row = content_height,
+    style = "minimal",
+    border = "none",
+    focusable = false,
+  })
+  vim.api.nvim_win_set_option(bar_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
+  vim.api.nvim_win_set_option(bar_win, "wrap", true)
+  pcall(vim.api.nvim_win_set_option, container_win, "winfixheight", true)
+  pcall(vim.api.nvim_win_set_option, container_win, "winfixwidth", true)
+  pcall(vim.api.nvim_win_set_option, win, "winfixheight", true)
+  pcall(vim.api.nvim_win_set_option, win, "winfixwidth", true)
+  pcall(vim.api.nvim_win_set_option, bar_win, "winfixheight", true)
+  pcall(vim.api.nvim_win_set_option, bar_win, "winfixwidth", true)
 
   local initial_lines = vim.split(default_value, "\n", { trimempty = false })
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, initial_lines)
@@ -484,7 +572,6 @@ function JQLPrompt.open(opts)
   vim.bo[buf].buflisted = false
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].filetype = "jira_jql"
-  set_help(buf, help_text)
 
   local state = {
     buf = buf,
@@ -496,11 +583,17 @@ function JQLPrompt.open(opts)
     on_close = on_close,
     closed = false,
     forced_insert = forced_insert,
+    help_text = help_text,
+    container_win = container_win,
+    container_buf = container_buf,
+    bar_win = bar_win,
+    bar_buf = bar_buf,
   }
 
+  set_help(state, help_text)
   fetch_autocomplete(state)
   highlight_buffer(buf, state.autocomplete)
-  attach_listeners(state, on_submit, on_change)
+  attach_listeners(state, on_submit, on_change, help_text)
   vim.cmd("startinsert")
   return true
 end
