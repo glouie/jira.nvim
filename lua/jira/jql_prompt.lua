@@ -9,6 +9,7 @@ local JQLPrompt = {}
 
 local prompt_ns = vim.api.nvim_create_namespace("jira.nvim.jql")
 local hint_ns = vim.api.nvim_create_namespace("jira.nvim.jql.hint")
+local history_ns = vim.api.nvim_create_namespace("jira.nvim.jql.history")
 local highlight_ready = false
 local default_help = "Example: project = ABC AND status in ('In Progress', 'To Do') ORDER BY updated DESC"
 local default_footer = ""
@@ -257,6 +258,201 @@ local function build_dimensions(config, default_value)
   }
 end
 
+---Replace the text inside the prompt buffer while optionally muting callbacks.
+---@param state table Prompt state.
+---@param text string|nil New buffer contents.
+---@param opts table|nil Options controlling change behaviour.
+---@return nil
+local function set_prompt_text(state, text, opts)
+  opts = opts or {}
+  if not state or not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
+    return
+  end
+  state.suppress_on_change = opts.suppress_change or false
+  local lines = vim.split(text or "", "\n", { trimempty = false })
+  if #lines == 0 then
+    lines = { "" }
+  end
+  vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
+  if opts.move_cursor and state.win and vim.api.nvim_win_is_valid(state.win) then
+    local last_line = math.max(1, #lines)
+    local last_col = math.max(0, #(lines[last_line] or ""))
+    pcall(vim.api.nvim_win_set_cursor, state.win, { last_line, last_col })
+  end
+  vim.schedule(function()
+    if state then
+      state.suppress_on_change = false
+    end
+  end)
+end
+
+---Build sidebar lines for history along with header height.
+---@param history string[]|nil Stored history entries.
+---@param width number|nil Sidebar width for truncation.
+---@return string[] lines Sidebar lines.
+---@return integer header_lines Count of header lines.
+local function history_sidebar_lines(history, width)
+  history = history or {}
+  width = math.max(10, tonumber(width) or 30)
+  local lines = { "Search history (latest at bottom)" }
+  local header_lines = #lines
+  if #history == 0 then
+    table.insert(lines, "  No previous searches")
+    return lines, header_lines
+  end
+  local max_summary = math.max(8, width - 8)
+  for _, entry in ipairs(history) do
+    local collapsed = utils.trim((entry or ""):gsub("[%s\r\n]+", " "))
+    if collapsed == "" then
+      collapsed = "(blank)"
+    end
+    if #collapsed > max_summary then
+      collapsed = collapsed:sub(1, max_summary - 3) .. "..."
+    end
+    table.insert(lines, string.format("  %s", collapsed))
+  end
+  return lines, header_lines
+end
+
+---Update the history sidebar buffer and highlight the active row.
+---@param state table Prompt state.
+---@return nil
+local function render_history_sidebar(state)
+  if not state or not state.history_buf or not vim.api.nvim_buf_is_valid(state.history_buf) then
+    return
+  end
+  local lines, header_lines = history_sidebar_lines(state.history, state.history_width)
+  vim.bo[state.history_buf].modifiable = true
+  vim.api.nvim_buf_set_lines(state.history_buf, 0, -1, false, lines)
+  vim.bo[state.history_buf].modifiable = false
+  vim.bo[state.history_buf].bufhidden = "wipe"
+  vim.bo[state.history_buf].swapfile = false
+  vim.bo[state.history_buf].filetype = "jira_jql_history"
+  state.history_header_lines = header_lines or 0
+  vim.api.nvim_buf_clear_namespace(state.history_buf, history_ns, 0, -1)
+  if header_lines and header_lines >= 1 and #lines >= header_lines then
+    vim.api.nvim_buf_add_highlight(state.history_buf, history_ns, "JiraPopupListHeader", 0, 0, -1)
+  end
+  if #state.history == 0 and #lines >= 2 then
+    vim.api.nvim_buf_add_highlight(state.history_buf, history_ns, "JiraPopupListEmpty", 1, 0, -1)
+  end
+  if state.history_selection then
+    local line_nr = (state.history_header_lines or 0) + state.history_selection
+    if line_nr >= 1 and line_nr <= #lines then
+      vim.api.nvim_buf_add_highlight(state.history_buf, history_ns, "JiraPopupListSelection", line_nr - 1, 0, -1)
+      if state.history_win and vim.api.nvim_win_is_valid(state.history_win) then
+        state.skip_history_cursor = true
+        pcall(vim.api.nvim_win_set_cursor, state.history_win, { line_nr, 0 })
+        state.skip_history_cursor = false
+      end
+    end
+  end
+end
+
+---Show the selected history entry inside the prompt buffer without committing it.
+---@param state table Prompt state.
+---@return boolean previewed True when a history entry was shown.
+local function preview_history_selection(state)
+  if not state or not state.history_selection then
+    return false
+  end
+  local entry = state.history and state.history[state.history_selection]
+  if not entry then
+    return false
+  end
+  if not state.previewing_history then
+    state.history_preview = buffer_text(state.buf)
+  end
+  state.previewing_history = true
+  set_prompt_text(state, entry, { suppress_change = true, move_cursor = true })
+  return true
+end
+
+---Restore the prompt buffer text after a history preview.
+---@param state table Prompt state.
+---@return boolean reverted True when the preview was reverted.
+local function cancel_history_preview(state)
+  if not state or not state.previewing_history then
+    return false
+  end
+  if not state.history_preview then
+    state.previewing_history = false
+    return false
+  end
+  set_prompt_text(state, state.history_preview, { suppress_change = true, move_cursor = true })
+  state.previewing_history = false
+  state.history_preview = nil
+  return true
+end
+
+---Replace the prompt text with the selected history entry and keep it editable.
+---@param state table Prompt state.
+---@return boolean applied True when a selection was applied.
+local function apply_history_selection(state)
+  if not state or not state.previewing_history or not state.history_selection then
+    return false
+  end
+  local entry = state.history and state.history[state.history_selection]
+  if not entry then
+    return false
+  end
+  state.history_preview = nil
+  state.previewing_history = false
+  set_prompt_text(state, entry, { move_cursor = true })
+  return true
+end
+
+---Sync the history selection to the cursor position and preview it.
+---@param state table Prompt state.
+---@return boolean updated True when selection changed.
+local function sync_history_selection_to_cursor(state)
+  if not state or not state.history or not state.history_win or not vim.api.nvim_win_is_valid(state.history_win) then
+    return false
+  end
+  if state.skip_history_cursor then
+    return false
+  end
+  local cursor = vim.api.nvim_win_get_cursor(state.history_win)
+  local header_lines = state.history_header_lines or 0
+  local selection = cursor[1] - header_lines
+  if selection < 1 or selection > #state.history then
+    if state.history_selection then
+      state.history_selection = nil
+      cancel_history_preview(state)
+      render_history_sidebar(state)
+      return true
+    end
+    return false
+  end
+  if state.history_selection == selection then
+    return false
+  end
+  state.history_selection = selection
+  render_history_sidebar(state)
+  return preview_history_selection(state)
+end
+
+---Move the history selection by a delta and preview the entry.
+---@param state table Prompt state.
+---@param delta integer Direction delta (positive for newer).
+---@return boolean moved True when a valid selection exists.
+local function move_history_selection(state, delta)
+  if not state or not state.history or #state.history == 0 then
+    return false
+  end
+  delta = delta or 0
+  local count = #state.history
+  local next_idx = state.history_selection
+  if not next_idx then
+    next_idx = delta > 0 and count or 1
+  else
+    next_idx = math.min(count, math.max(1, next_idx + delta))
+  end
+  state.history_selection = next_idx
+  render_history_sidebar(state)
+  return preview_history_selection(state)
+end
+
 ---Close the prompt windows and cleanup timers/autocmds.
 ---@param state table Prompt state object.
 ---@return nil
@@ -265,6 +461,9 @@ local function close_prompt(state)
     return
   end
   state.closed = true
+  if state.previewing_history and state.history_preview then
+    cancel_history_preview(state)
+  end
   local current_line = nil
   local buf_valid = state.buf and vim.api.nvim_buf_is_valid(state.buf)
   if buf_valid then
@@ -283,11 +482,17 @@ local function close_prompt(state)
   else
     vim.api.nvim_clear_autocmds({ group = completion_group })
   end
+  if state.history_buf and vim.api.nvim_buf_is_valid(state.history_buf) then
+    vim.api.nvim_clear_autocmds({ group = completion_group, buffer = state.history_buf })
+  end
   if state.on_close then
     pcall(state.on_close, current_line)
   end
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     pcall(vim.api.nvim_win_close, state.win, true)
+  end
+  if state.history_win and vim.api.nvim_win_is_valid(state.history_win) then
+    pcall(vim.api.nvim_win_close, state.history_win, true)
   end
   if state.bar_win and vim.api.nvim_win_is_valid(state.bar_win) then
     pcall(vim.api.nvim_win_close, state.bar_win, true)
@@ -298,6 +503,9 @@ local function close_prompt(state)
   if buf_valid then
     pcall(vim.api.nvim_buf_delete, state.buf, { force = true })
   end
+  if state.history_buf and vim.api.nvim_buf_is_valid(state.history_buf) then
+    pcall(vim.api.nvim_buf_delete, state.history_buf, { force = true })
+  end
   if state.bar_buf and vim.api.nvim_buf_is_valid(state.bar_buf) then
     pcall(vim.api.nvim_buf_delete, state.bar_buf, { force = true })
   end
@@ -306,6 +514,8 @@ local function close_prompt(state)
   end
   state.buf = nil
   state.win = nil
+  state.history_buf = nil
+  state.history_win = nil
   state.bar_buf = nil
   state.bar_win = nil
   state.container_buf = nil
@@ -503,6 +713,9 @@ local function attach_listeners(state, on_submit, on_change, help_text)
       if help_text then
         set_help(state, help_text)
       end
+      if state.suppress_on_change then
+        return
+      end
       if on_change then
         on_change(buffer_text(state.buf))
       end
@@ -514,10 +727,37 @@ local function attach_listeners(state, on_submit, on_change, help_text)
     group = completion_group,
     buffer = state.buf,
     callback = function()
+      if state.skip_bufleave then
+        state.skip_bufleave = false
+        return
+      end
       close_prompt(state)
     end,
   })
+  if state.history_buf and vim.api.nvim_buf_is_valid(state.history_buf) then
+    vim.api.nvim_create_autocmd("BufLeave", {
+      group = completion_group,
+      buffer = state.history_buf,
+      callback = function()
+        if state.skip_bufleave then
+          state.skip_bufleave = false
+          return
+        end
+        close_prompt(state)
+      end,
+    })
+    vim.api.nvim_create_autocmd("CursorMoved", {
+      group = completion_group,
+      buffer = state.history_buf,
+      callback = function()
+        sync_history_selection_to_cursor(state)
+      end,
+    })
+  end
   local key_opts = { buffer = state.buf, nowait = true, silent = true }
+  local expr_opts = vim.tbl_extend("force", key_opts, { expr = true, replace_keycodes = true })
+  local history_key_opts = state.history_buf and { buffer = state.history_buf, nowait = true, silent = true } or nil
+  local history_expr_opts = history_key_opts and vim.tbl_extend("force", history_key_opts, { expr = true, replace_keycodes = true }) or nil
   local function submit_query()
     local text = buffer_text(state.buf)
     close_prompt(state)
@@ -526,8 +766,122 @@ local function attach_listeners(state, on_submit, on_change, help_text)
   local function open_help_popup()
     popup.show_help(state.config)
   end
-  vim.keymap.set("n", "<CR>", submit_query, key_opts)
+  local function handle_enter()
+    if apply_history_selection(state) then
+      return
+    end
+    submit_query()
+  end
+  local function handle_enter_insert()
+    if vim.fn.pumvisible() == 1 then
+      return "<CR>"
+    end
+    if apply_history_selection(state) then
+      return ""
+    end
+    return "<CR>"
+  end
+  local function apply_history_and_focus_prompt()
+    if state.history_selection and not state.previewing_history then
+      preview_history_selection(state)
+    end
+    if not apply_history_selection(state) then
+      return false
+    end
+    if state.win and vim.api.nvim_win_is_valid(state.win) then
+      state.skip_bufleave = true
+      local ok = pcall(vim.api.nvim_set_current_win, state.win)
+      if not ok and state.skip_bufleave then
+        state.skip_bufleave = false
+      end
+    end
+    return true
+  end
+  local function history_down()
+    if vim.fn.pumvisible() == 1 then
+      return "<C-n>"
+    end
+    if move_history_selection(state, 1) then
+      return ""
+    end
+    return "<C-n>"
+  end
+  local function history_up()
+    if vim.fn.pumvisible() == 1 then
+      return "<C-p>"
+    end
+    if move_history_selection(state, -1) then
+      return ""
+    end
+    return "<C-p>"
+  end
+  local function leave_history_preview()
+    if vim.fn.pumvisible() == 1 then
+      return "<Tab>"
+    end
+    if cancel_history_preview(state) then
+      return ""
+    end
+    return "<Tab>"
+  end
+  local function toggle_history_focus()
+    if vim.fn.pumvisible() == 1 then
+      return "<Tab>"
+    end
+    if not state then
+      return "<Tab>"
+    end
+    local prompt_win = state.win
+    local history_win = state.history_win
+    local prompt_valid = prompt_win and vim.api.nvim_win_is_valid(prompt_win)
+    local history_valid = history_win and vim.api.nvim_win_is_valid(history_win)
+    if not (prompt_valid and history_valid) then
+      if cancel_history_preview(state) then
+        return ""
+      end
+      return "<Tab>"
+    end
+    local current = vim.api.nvim_get_current_win()
+    local target = prompt_win
+    if current == prompt_win then
+      target = history_win
+    elseif current == history_win then
+      target = prompt_win
+    end
+    state.skip_bufleave = true
+    vim.schedule(function()
+      if state.closed then
+        return
+      end
+      if not target or not vim.api.nvim_win_is_valid(target) then
+        state.skip_bufleave = false
+        return
+      end
+      local ok = pcall(vim.api.nvim_set_current_win, target)
+      if not ok and state.skip_bufleave then
+        state.skip_bufleave = false
+      end
+    end)
+    return ""
+  end
+  vim.keymap.set("n", "<CR>", handle_enter, key_opts)
+  vim.keymap.set("i", "<CR>", handle_enter_insert, expr_opts)
   vim.keymap.set({ "i", "n" }, "<C-y>", submit_query, key_opts)
+  vim.keymap.set({ "i", "n" }, "<C-n>", history_down, expr_opts)
+  vim.keymap.set({ "i", "n" }, "<C-p>", history_up, expr_opts)
+  vim.keymap.set("i", "<Tab>", leave_history_preview, expr_opts)
+  vim.keymap.set("n", "<Tab>", toggle_history_focus, expr_opts)
+  if history_expr_opts then
+    vim.keymap.set("n", "<Tab>", toggle_history_focus, history_expr_opts)
+    vim.keymap.set("n", "<C-n>", history_down, history_expr_opts)
+    vim.keymap.set("n", "<C-p>", history_up, history_expr_opts)
+    vim.keymap.set("n", "<CR>", function()
+      if apply_history_and_focus_prompt() then
+        return ""
+      end
+      return "<CR>"
+    end, history_expr_opts)
+  end
   vim.keymap.set({ "i", "n" }, "<C-c>", function()
     close_prompt(state)
   end, key_opts)
@@ -535,6 +889,18 @@ local function attach_listeners(state, on_submit, on_change, help_text)
     close_prompt(state)
   end, key_opts)
   vim.keymap.set({ "i", "n" }, "?", open_help_popup, key_opts)
+  if history_key_opts then
+    vim.keymap.set("n", "<CR>", function()
+      apply_history_and_focus_prompt()
+    end, history_key_opts)
+    vim.keymap.set({ "i", "n" }, "<C-c>", function()
+      close_prompt(state)
+    end, history_key_opts)
+    vim.keymap.set("n", "q", function()
+      close_prompt(state)
+    end, history_key_opts)
+    vim.keymap.set("n", "?", open_help_popup, history_key_opts)
+  end
 end
 
 ---Fetch autocomplete metadata for fields/functions/keywords.
@@ -567,6 +933,14 @@ function JQLPrompt.open(opts)
   local on_change = opts.on_change
   local on_close = opts.on_close
   local config = opts.config or {}
+  local history_entries = {}
+  if type(opts.history) == "table" then
+    for _, entry in ipairs(opts.history) do
+      if type(entry) == "string" and utils.trim(entry) ~= "" then
+        table.insert(history_entries, entry)
+      end
+    end
+  end
   local initial_mode = vim.api.nvim_get_mode().mode
   local forced_insert = not (initial_mode == "i" or initial_mode == "ic")
 
@@ -582,6 +956,12 @@ function JQLPrompt.open(opts)
   local bar_lines, bar_highlights = popup.shortcut_bar_lines("jql", dims.width)
   local bar_height = math.max(1, #bar_lines)
   local content_height = math.max(3, dims.height - bar_height)
+  local min_prompt_width = 30
+  local history_width = math.max(18, math.floor(dims.width * 0.32))
+  if history_width > dims.width - min_prompt_width then
+    history_width = math.max(0, dims.width - min_prompt_width)
+  end
+  local prompt_width = math.max(min_prompt_width, dims.width - history_width)
 
   local container_buf = vim.api.nvim_create_buf(false, true)
   vim.bo[container_buf].bufhidden = "wipe"
@@ -605,22 +985,45 @@ function JQLPrompt.open(opts)
     pcall(vim.api.nvim_buf_delete, container_buf, { force = true })
     return false
   end
-
+  local history_buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[history_buf].bufhidden = "wipe"
+  vim.bo[history_buf].modifiable = false
+  vim.bo[history_buf].filetype = "jira_jql_history"
+  local ok_history, history_win = pcall(vim.api.nvim_open_win, history_buf, false, {
+    relative = "win",
+    win = container_win,
+    width = history_width,
+    height = content_height,
+    col = 0,
+    row = 0,
+    style = "minimal",
+    border = "none",
+    focusable = true,
+  })
+  if not ok_history or not history_win then
+    pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    pcall(vim.api.nvim_buf_delete, history_buf, { force = true })
+    close_prompt({ win = container_win, buf = container_buf })
+    return false
+  end
   local ok_content, win = pcall(vim.api.nvim_open_win, buf, true, {
     relative = "win",
     win = container_win,
-    width = dims.width,
+    width = prompt_width,
     height = content_height,
-    col = 0,
+    col = history_width,
     row = 0,
     style = "minimal",
     border = "none",
   })
   if not ok_content or not win then
     pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    pcall(vim.api.nvim_buf_delete, history_buf, { force = true })
     close_prompt({ win = container_win, buf = container_buf })
     return false
   end
+  vim.api.nvim_win_set_option(history_win, "wrap", false)
+  vim.api.nvim_win_set_option(history_win, "winhl", "Normal:JiraPopupDetailsBody,NormalNC:JiraPopupDetailsBody")
   vim.api.nvim_win_set_option(win, "wrap", true)
   vim.api.nvim_win_set_option(win, "winhl", "Normal:JiraPopupDetailsBody,FloatBorder:JiraPopupDetailsHeader")
 
@@ -645,6 +1048,8 @@ function JQLPrompt.open(opts)
   vim.api.nvim_win_set_option(bar_win, "wrap", true)
   pcall(vim.api.nvim_win_set_option, container_win, "winfixheight", true)
   pcall(vim.api.nvim_win_set_option, container_win, "winfixwidth", true)
+  pcall(vim.api.nvim_win_set_option, history_win, "winfixheight", true)
+  pcall(vim.api.nvim_win_set_option, history_win, "winfixwidth", true)
   pcall(vim.api.nvim_win_set_option, win, "winfixheight", true)
   pcall(vim.api.nvim_win_set_option, win, "winfixwidth", true)
   pcall(vim.api.nvim_win_set_option, bar_win, "winfixheight", true)
@@ -669,12 +1074,23 @@ function JQLPrompt.open(opts)
     closed = false,
     forced_insert = forced_insert,
     help_text = help_text,
+    history = history_entries,
+    history_width = history_width,
+    history_buf = history_buf,
+    history_win = history_win,
+    history_selection = nil,
+    history_preview = nil,
+    previewing_history = false,
+    skip_history_cursor = false,
+    suppress_on_change = false,
+    skip_bufleave = false,
     container_win = container_win,
     container_buf = container_buf,
     bar_win = bar_win,
     bar_buf = bar_buf,
   }
 
+  render_history_sidebar(state)
   set_help(state, help_text)
   fetch_autocomplete(state)
   highlight_buffer(buf, state.autocomplete)

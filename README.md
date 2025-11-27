@@ -58,6 +58,7 @@ require("jira").setup({
     width = 0.6,
     height = 0.6,
     max_results = 50,
+    history_size = 50, -- how many past searches to show in the prompt sidebar
   },
   popup = {
     width = 0.6,
@@ -72,6 +73,7 @@ require("jira").setup({
 })
 ```
 Set `ignored_projects` to a list of project prefixes (defaults to `{ "SEV" }`) when you need to avoid false positives such as severity labels that resemble issue keys.
+JQL search history is stored at `stdpath("data")/jira.nvim/search_history.json` and respects `history_size` (set it to `0` to skip saving and showing history).
 Use `max_lines` to cap how many lines in the current buffer are scanned for issue keys when you only want to underline the top of very large files.
 Customize `assigned_popup` to tweak the keybinding, size, or number of issues returned by the "assigned to me" list, and `search_popup` for the JQL prompt/table layout. Issue tables show the total result count, the range currently visible, and let you move between rows with `j`/`k` (or `<S-N>/<S-P>`), page with `<C-f>/<C-b>`, and hit `<CR>` to open the selected issue without dismissing the list.
 
@@ -83,7 +85,7 @@ Customize `assigned_popup` to tweak the keybinding, size, or number of issues re
 4. Inspect the popup. Use `j`/`k`, `gg`, or `G` to move around; `/` plus `n`/`N` to search inside the popup; `Tab`/`<S-Tab>` to swap focus between the main pane, sidebar, and URL bar; `<C-n>`/`<C-p>` to jump to the next or previous issue match in the buffer; `o` to open the issue in a browser; place the cursor on any URL and press `<CR>` or Cmd+click (macOS)/Ctrl+click (Windows) to open it; `Esc` or `q` to close it.
 5. Press `<leader>ja` to see unresolved issues assigned to you, or `<leader>js` to enter a JQL query and page through the matches. Use `j`/`k` (or `<S-N>/<S-P>`) to move through the list, `<CR>` to open an issue (the list stays open so you can come right back), `<C-f>/<C-b>` to change pages, and `q`/`Esc` to close the popup(s).
 
-Inside the JQL prompt, `Esc` drops you into Normal mode so you can edit/yank/clear text with your usual motions. Submit with `<CR>` or `<C-y>`, navigate completion items with `<C-n>/<C-p>`, and exit with `<C-c>` (insert or normal) or `q` (normal).
+Inside the JQL prompt, `Esc` drops you into Normal mode so you can edit/yank/clear text with your usual motions. The left sidebar lists your recent queries (latest at the bottom); browse it with `<C-n>/<C-p>`, preview entries in the input as you highlight them, press `<CR>` to load one without submitting, and press `<Tab>` in Normal mode to swap focus between the input and history pane (in Insert mode `<Tab>` still cancels a preview). Submit with `<CR>` in Normal mode or `<C-y>`, and when the completion menu is visible `<C-n>/<C-p>` still cycle suggestions. Exit with `<C-c>` (insert or normal) or `q` (normal).
 
 ## Roadmap
 

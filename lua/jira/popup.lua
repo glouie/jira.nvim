@@ -13,6 +13,7 @@ local shortcut_categories_for_bar = {
   submit = true,
   open = true,
   help = true,
+  nav = true,
 }
 local shortcut_sections = {
   issue = {
@@ -33,7 +34,7 @@ local shortcut_sections = {
     title = "Issue list popup",
     entries = {
       { keys = "q/Esc", description = "Close popup", category = "exit" },
-      { keys = "j/k/<Up>/<Down>", description = "Move selection", category = "nav" },
+      { keys = "j/k/<Up>/<Down>/<S-N>/<S-P>", description = "Move selection", category = "nav" },
       { keys = "<C-f>/<C-b>", description = "Next/previous page", category = "nav" },
       { keys = "<CR>", description = "Open selected issue", category = "open" },
       { keys = "?", description = "Open help popup", category = "help" },
@@ -43,8 +44,10 @@ local shortcut_sections = {
     title = "JQL search popup",
     entries = {
       { keys = "q/<C-c>", description = "Cancel search", category = "exit" },
-      { keys = "<C-n>/<C-p>", description = "Navigate suggestions", category = "nav" },
-      { keys = "<CR>/<C-y>", description = "Submit query", category = "submit" },
+      { keys = "<C-n>/<C-p>", description = "History or completion down/up", category = "nav" },
+      { keys = "<Tab>", description = "Toggle focus or cancel preview", category = "nav" },
+      { keys = "<CR>", description = "Apply history selection or submit", category = "submit" },
+      { keys = "<C-y>", description = "Submit query", category = "submit" },
       { keys = "?", description = "Open help popup", category = "help" },
     },
   },

@@ -76,6 +76,7 @@ local default_config = {
     height = 0.6,
     border = "rounded",
     max_results = 50,
+    history_size = 50,
   },
   popup = {
     width = 0.65,
@@ -95,6 +96,159 @@ local group = vim.api.nvim_create_augroup("jira.nvim", { clear = true })
 local navigation_state
 local move_navigation
 local last_jql_query
+local search_history = {}
+
+---Join filesystem path segments with a forward slash fallback.
+---@param ... string Path segments.
+---@return string path Joined path.
+local function join_path(...)
+  local parts = { ... }
+  if vim.fs and vim.fs.joinpath then
+    local unpack_fn = table.unpack or unpack
+    return vim.fs.joinpath(unpack_fn(parts))
+  end
+  local path = ""
+  for _, part in ipairs(parts) do
+    if part and part ~= "" then
+      if path ~= "" and not path:match("/$") then
+        path = path .. "/"
+      end
+      path = path .. part
+    end
+  end
+  return path
+end
+
+---Resolve the on-disk path used to store JQL history.
+---@return string|nil path Absolute file path or nil when stdpath is unavailable.
+local function history_store_path()
+  local ok, data_dir = pcall(vim.fn.stdpath, "data")
+  if not ok or not data_dir or data_dir == "" then
+    return nil
+  end
+  return join_path(data_dir, "jira.nvim", "search_history.json")
+end
+
+---Return the configured history size limit for the JQL prompt.
+---@return integer limit Maximum number of entries to keep.
+local function history_limit()
+  local limit = default_config.search_popup.history_size or 0
+  local configured = config.search_popup and config.search_popup.history_size
+  if configured ~= nil then
+    limit = configured
+  end
+  limit = tonumber(limit) or 0
+  if limit < 0 then
+    limit = 0
+  end
+  return math.floor(limit)
+end
+
+---Persist the current search history to disk.
+---@return nil
+local function save_search_history()
+  local limit = history_limit()
+  if limit <= 0 then
+    return
+  end
+  local path = history_store_path()
+  if not path then
+    return
+  end
+  local dir = path:match("^(.*)/[^/]+$")
+  if dir and dir ~= "" then
+    pcall(vim.fn.mkdir, dir, "p")
+  end
+  local ok_encode, payload = pcall(utils.json_encode, search_history)
+  if not ok_encode or not payload then
+    return
+  end
+  local file = io.open(path, "w")
+  if not file then
+    return
+  end
+  file:write(payload)
+  file:close()
+end
+
+---Trim stored JQL history to the configured limit.
+---@param opts table|nil Additional options.
+---@return nil
+local function trim_search_history(opts)
+  local limit = history_limit()
+  if limit <= 0 then
+    search_history = {}
+    if opts and opts.persist then
+      save_search_history()
+    end
+    return
+  end
+  while #search_history > limit do
+    table.remove(search_history, 1)
+  end
+  if opts and opts.persist then
+    save_search_history()
+  end
+end
+
+---Insert a search history entry, ensuring the most recent copy is kept.
+---@param value string Cleaned JQL string.
+---@return nil
+local function push_search_history(value)
+  if value == "" then
+    return
+  end
+  for idx = #search_history, 1, -1 do
+    if search_history[idx] == value then
+      table.remove(search_history, idx)
+    end
+  end
+  table.insert(search_history, value)
+end
+
+---Load saved JQL history from disk.
+---@return nil
+local function load_search_history()
+  search_history = {}
+  local path = history_store_path()
+  if not path then
+    return
+  end
+  local file = io.open(path, "r")
+  if not file then
+    return
+  end
+  local ok_read, contents = pcall(file.read, file, "*a")
+  file:close()
+  if not ok_read or not contents or contents == "" then
+    return
+  end
+  local decoded = utils.json_decode(contents)
+  if type(decoded) ~= "table" then
+    return
+  end
+  for _, entry in ipairs(decoded) do
+    if type(entry) == "string" then
+      local cleaned = utils.trim(entry)
+      if cleaned ~= "" then
+        push_search_history(cleaned)
+      end
+    end
+  end
+  trim_search_history({ persist = true })
+end
+
+---Record a submitted JQL query in the history ring.
+---@param query string|nil JQL text to store.
+---@return nil
+local function record_search_history(query)
+  local cleaned = utils.trim(query or "")
+  if cleaned == "" then
+    return
+  end
+  push_search_history(cleaned)
+  trim_search_history({ persist = true })
+end
 
 ---Rebuild a lookup map for ignored project keys from config.
 ---@return nil
@@ -368,6 +522,8 @@ function M.setup(opts)
   config.popup = vim.tbl_deep_extend("force", deepcopy(default_config.popup), opts.popup or {})
   config.assigned_popup = vim.tbl_deep_extend("force", deepcopy(default_config.assigned_popup), opts.assigned_popup or {})
   config.search_popup = vim.tbl_deep_extend("force", deepcopy(default_config.search_popup), opts.search_popup or {})
+  load_search_history()
+  trim_search_history({ persist = true })
   rebuild_ignored_project_map()
   ensure_highlight()
   attach_autocmds()
@@ -611,12 +767,15 @@ function M.open_jql_search()
       return
     end
     last_jql_query = input or query
+    record_search_history(input or query)
     render_jql_page(query)
   end
+  local history_snapshot = deepcopy(search_history)
   local ok = jql_prompt.open({
     default = default_query,
     help = help,
     config = config,
+    history = history_snapshot,
     on_submit = submit,
     on_change = function(value)
       if value ~= nil then
