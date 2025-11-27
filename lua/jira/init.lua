@@ -78,6 +78,13 @@ local default_config = {
     max_results = 50,
     history_size = 50,
   },
+  history_popup = {
+    keymap = "<leader>jh",
+    width = 0.55,
+    height = 0.5,
+    border = "rounded",
+    history_size = 200,
+  },
   popup = {
     width = 0.65,
     height = 0.75,
@@ -97,6 +104,7 @@ local navigation_state
 local move_navigation
 local last_jql_query
 local search_history = {}
+local issue_history = {}
 
 ---Join filesystem path segments with a forward slash fallback.
 ---@param ... string Path segments.
@@ -129,11 +137,36 @@ local function history_store_path()
   return join_path(data_dir, "jira.nvim", "search_history.json")
 end
 
+---Resolve the on-disk path used to store opened issue history.
+---@return string|nil path Absolute file path or nil when stdpath is unavailable.
+local function issue_history_store_path()
+  local ok, data_dir = pcall(vim.fn.stdpath, "data")
+  if not ok or not data_dir or data_dir == "" then
+    return nil
+  end
+  return join_path(data_dir, "jira.nvim", "issue_history.json")
+end
+
 ---Return the configured history size limit for the JQL prompt.
 ---@return integer limit Maximum number of entries to keep.
 local function history_limit()
   local limit = default_config.search_popup.history_size or 0
   local configured = config.search_popup and config.search_popup.history_size
+  if configured ~= nil then
+    limit = configured
+  end
+  limit = tonumber(limit) or 0
+  if limit < 0 then
+    limit = 0
+  end
+  return math.floor(limit)
+end
+
+---Return the configured history size limit for opened issues.
+---@return integer limit Maximum number of entries to keep.
+local function issue_history_limit()
+  local limit = default_config.history_popup.history_size or 0
+  local configured = config.history_popup and config.history_popup.history_size
   if configured ~= nil then
     limit = configured
   end
@@ -171,6 +204,33 @@ local function save_search_history()
   file:close()
 end
 
+---Persist the current issue history to disk.
+---@return nil
+local function save_issue_history()
+  local limit = issue_history_limit()
+  if limit <= 0 then
+    return
+  end
+  local path = issue_history_store_path()
+  if not path then
+    return
+  end
+  local dir = path:match("^(.*)/[^/]+$")
+  if dir and dir ~= "" then
+    pcall(vim.fn.mkdir, dir, "p")
+  end
+  local ok_encode, payload = pcall(utils.json_encode, issue_history)
+  if not ok_encode or not payload then
+    return
+  end
+  local file = io.open(path, "w")
+  if not file then
+    return
+  end
+  file:write(payload)
+  file:close()
+end
+
 ---Trim stored JQL history to the configured limit.
 ---@param opts table|nil Additional options.
 ---@return nil
@@ -191,6 +251,26 @@ local function trim_search_history(opts)
   end
 end
 
+---Trim stored opened-issue history to the configured limit.
+---@param opts table|nil Additional options.
+---@return nil
+local function trim_issue_history(opts)
+  local limit = issue_history_limit()
+  if limit <= 0 then
+    issue_history = {}
+    if opts and opts.persist then
+      save_issue_history()
+    end
+    return
+  end
+  while #issue_history > limit do
+    table.remove(issue_history, 1)
+  end
+  if opts and opts.persist then
+    save_issue_history()
+  end
+end
+
 ---Insert a search history entry, ensuring the most recent copy is kept.
 ---@param value string Cleaned JQL string.
 ---@return nil
@@ -204,6 +284,22 @@ local function push_search_history(value)
     end
   end
   table.insert(search_history, value)
+end
+
+---Insert an issue history entry, ensuring the most recent copy is kept.
+---@param entry table Issue data containing `key` and optional `summary`.
+---@return nil
+local function push_issue_history(entry)
+  if not entry or not entry.key or entry.key == "" then
+    return
+  end
+  for idx = #issue_history, 1, -1 do
+    if issue_history[idx] and issue_history[idx].key == entry.key then
+      table.remove(issue_history, idx)
+    end
+  end
+  entry.summary = utils.trim(entry.summary or "")
+  table.insert(issue_history, entry)
 end
 
 ---Load saved JQL history from disk.
@@ -238,6 +334,40 @@ local function load_search_history()
   trim_search_history({ persist = true })
 end
 
+---Load saved issue history from disk.
+---@return nil
+local function load_issue_history()
+  issue_history = {}
+  local path = issue_history_store_path()
+  if not path then
+    return
+  end
+  local file = io.open(path, "r")
+  if not file then
+    return
+  end
+  local ok_read, contents = pcall(file.read, file, "*a")
+  file:close()
+  if not ok_read or not contents or contents == "" then
+    return
+  end
+  local decoded = utils.json_decode(contents)
+  if type(decoded) ~= "table" then
+    return
+  end
+  for _, entry in ipairs(decoded) do
+    if type(entry) == "table" and type(entry.key) == "string" then
+      push_issue_history({
+        key = entry.key,
+        summary = utils.trim(entry.summary or ""),
+      })
+    elseif type(entry) == "string" then
+      push_issue_history({ key = entry, summary = "" })
+    end
+  end
+  trim_issue_history({ persist = true })
+end
+
 ---Record a submitted JQL query in the history ring.
 ---@param query string|nil JQL text to store.
 ---@return nil
@@ -248,6 +378,25 @@ local function record_search_history(query)
   end
   push_search_history(cleaned)
   trim_search_history({ persist = true })
+end
+
+---Record a successfully opened issue in the history store.
+---@param issue table|nil Jira issue payload containing `key` and fields.
+---@return nil
+local function record_issue_history(issue)
+  if not issue or not issue.key or issue.key == "" then
+    return
+  end
+  local summary = ""
+  local fields = issue.fields
+  if type(fields) == "table" then
+    summary = utils.trim(fields.summary or fields.title or "")
+  end
+  push_issue_history({
+    key = issue.key,
+    summary = summary,
+  })
+  trim_issue_history({ persist = true })
 end
 
 ---Rebuild a lookup map for ignored project keys from config.
@@ -522,8 +671,11 @@ function M.setup(opts)
   config.popup = vim.tbl_deep_extend("force", deepcopy(default_config.popup), opts.popup or {})
   config.assigned_popup = vim.tbl_deep_extend("force", deepcopy(default_config.assigned_popup), opts.assigned_popup or {})
   config.search_popup = vim.tbl_deep_extend("force", deepcopy(default_config.search_popup), opts.search_popup or {})
+  config.history_popup = vim.tbl_deep_extend("force", deepcopy(default_config.history_popup), opts.history_popup or {})
   load_search_history()
+  load_issue_history()
   trim_search_history({ persist = true })
+  trim_issue_history({ persist = true })
   rebuild_ignored_project_map()
   ensure_highlight()
   attach_autocmds()
@@ -543,6 +695,12 @@ function M.setup(opts)
     vim.keymap.set("n", search_keymap, function()
       M.open_jql_search()
     end, { desc = "jira.nvim: search Jira via JQL" })
+  end
+  local history_keymap = config.history_popup and config.history_popup.keymap
+  if history_keymap and history_keymap ~= "" then
+    vim.keymap.set("n", history_keymap, function()
+      M.open_issue_history()
+    end, { desc = "jira.nvim: open viewed issue history" })
   end
   highlight_buffer(vim.api.nvim_get_current_buf())
 end
@@ -577,6 +735,7 @@ function M.open_issue(issue_key, opts)
         vim.notify(string.format("jira.nvim: %s", err), vim.log.levels.ERROR)
         return
       end
+      record_issue_history(issue)
       local nav_context = nil
       if navigation_state then
         local idx = issue_index(navigation_state.issues, issue.key)
@@ -798,6 +957,22 @@ function M.open_jql_search()
       end
     end
   end
+end
+
+---Open a popup listing previously viewed issues from history.
+---@return nil
+function M.open_issue_history()
+  local issues = {}
+  for idx = #issue_history, 1, -1 do
+    table.insert(issues, issue_history[idx])
+  end
+  popup.render_issue_list(issues, config, {
+    title = "Viewed Issues",
+    subtitle = string.format("%d unique issues", #issues),
+    empty_message = "No issues viewed yet.",
+    layout = config.history_popup,
+    on_select = open_issue_from_list,
+  })
 end
 
 return M
