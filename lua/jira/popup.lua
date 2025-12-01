@@ -8,6 +8,7 @@ local Popup = {}
 local popup_ns = vim.api.nvim_create_namespace("jira.nvim.popup")
 local list_ns = vim.api.nvim_create_namespace("jira.nvim.popup.list")
 local popup_highlights_ready = false
+local help_line_limit = 79
 local shortcut_categories_for_bar = {
   exit = true,
   submit = true,
@@ -24,7 +25,21 @@ local shortcut_sections = {
       { keys = "Tab/S-Tab", description = "Switch panes", category = "nav" },
       { keys = "/", description = "Search within pane", category = "nav" },
       { keys = "n/N", description = "Repeat last search", category = "nav" },
-      { keys = "<C-n>/<C-p>", description = "Next/previous issue", category = "nav" },
+      {
+        keys = "<C-n>/<C-p>",
+        description = "Next/previous issue",
+        category = "nav",
+        when = function(opts)
+          if opts == nil then
+            return true
+          end
+          local nav = opts and opts.navigation
+          if not nav then
+            return false
+          end
+          return nav.goto_next or nav.goto_prev or nav.next_issue or nav.prev_issue
+        end,
+      },
       { keys = "<CR>/Cmd/Ctrl+Click", description = "Open URL under cursor", category = "open" },
       { keys = "o", description = "Open issue in browser", category = "open" },
       { keys = "?", description = "Open help popup", category = "help" },
@@ -122,6 +137,23 @@ local severity_rules = {
   { level = 4, keywords = { "sev3", "sev-3", "low", "minor", "trivial" } },
 }
 local fill_buffer
+
+---Return the shortcut section filtered by runtime context.
+---@param section_key string Section identifier.
+---@param opts table|nil Context such as navigation availability.
+---@return table section Shortcut section with filtered entries.
+local function resolve_shortcut_section(section_key, opts)
+  local section = shortcut_sections[section_key] or {}
+  local resolved = { title = section.title or section_key, entries = {} }
+  for _, entry in ipairs(section.entries or {}) do
+    if entry.when and not entry.when(opts) then
+      goto continue
+    end
+    table.insert(resolved.entries, entry)
+    ::continue::
+  end
+  return resolved
+end
 
 ---Initialize highlight groups used across popup buffers.
 ---@return nil
@@ -326,10 +358,11 @@ end
 ---Build shortcut bar lines and highlight metadata for a section.
 ---@param section_key string Section identifier (issue/list/jql/help).
 ---@param width number|nil Maximum wrap width.
+---@param opts table|nil Context to filter shortcuts, e.g., { navigation = nav_context }.
 ---@return string[] lines Wrapped shortcut lines.
 ---@return table highlights Highlight entries aligned to lines.
-local function shortcut_bar_lines(section_key, width)
-  local section = shortcut_sections[section_key] or {}
+local function shortcut_bar_lines(section_key, width, opts)
+  local section = resolve_shortcut_section(section_key, opts)
   local actions = {}
   for _, entry in ipairs(section.entries or {}) do
     if shortcut_categories_for_bar[entry.category] then
@@ -339,7 +372,10 @@ local function shortcut_bar_lines(section_key, width)
   local segments = {}
   for _, entry in ipairs(actions) do
     if entry.description and entry.description ~= "" then
-      table.insert(segments, string.format("%s %s", entry.keys, entry.description))
+      table.insert(
+        segments,
+        string.format("%s %s", entry.keys, entry.description)
+      )
     elseif entry.keys then
       table.insert(segments, entry.keys)
     end
@@ -370,26 +406,44 @@ end
 
 ---Construct the help popup content and highlights.
 ---@param width number|nil Desired popup width.
+---@param opts table|nil Context to filter shortcuts, e.g., { navigation = nav_context }.
 ---@return string[] lines Help text lines.
 ---@return table highlights Highlight entries per line.
-local function help_popup_lines(width)
+local function help_popup_lines(width, opts)
   local lines = {}
   local highlights = {}
-  local available_width = math.max(30, (width or 80) - 4)
+  local available_width =
+    math.min(help_line_limit, math.max(30, (width or 80) - 4))
   for _, key in ipairs({ "issue", "list", "jql" }) do
-    local section = shortcut_sections[key]
+    local section = resolve_shortcut_section(key, opts)
     if section and section.entries and #section.entries > 0 then
       table.insert(lines, section.title or key)
-      highlight_full_line(highlights, "JiraPopupSection", #lines - 1, lines[#lines])
+      highlight_full_line(
+        highlights,
+        "JiraPopupSection",
+        #lines - 1,
+        lines[#lines]
+      )
+      local max_key_len = 0
+      for _, entry in ipairs(section.entries) do
+        max_key_len = math.max(max_key_len, #(entry.keys or ""))
+      end
       for _, entry in ipairs(section.entries) do
         local keys = entry.keys or ""
         local desc = entry.description or ""
-        local wrap = utils.wrap_text(desc, math.max(10, available_width - #keys - 3))
+        local wrap = utils.wrap_text(
+          desc,
+          math.max(10, available_width - max_key_len - 3)
+        )
         if #wrap == 0 then
           wrap = { "" }
         end
+        local padded_keys =
+          keys .. string.rep(" ", math.max(0, max_key_len - #keys))
         for idx, part in ipairs(wrap) do
-          local prefix = (idx == 1) and (keys .. " - ") or string.rep(" ", #keys + 3)
+          local prefix = (idx == 1)
+              and (padded_keys .. " - ")
+              or string.rep(" ", max_key_len + 3)
           local line = prefix .. part
           table.insert(lines, line)
           local line_idx = #lines - 1
@@ -417,11 +471,12 @@ end
 ---Build the shortcut bar text and highlight metadata for a given popup section.
 ---@param section_key string Section identifier such as "issue", "list", or "jql".
 ---@param width number|nil Desired wrap width for the bar.
+---@param opts table|nil Context to filter shortcuts (e.g., navigation availability).
 ---@return string[] lines Wrapped shortcut lines.
 ---@return table highlights Highlight entries aligned with the returned lines.
-function Popup.shortcut_bar_lines(section_key, width)
+function Popup.shortcut_bar_lines(section_key, width, opts)
   ensure_popup_highlights()
-  return shortcut_bar_lines(section_key, width)
+  return shortcut_bar_lines(section_key, width, opts)
 end
 
 ---Append lines and highlight metadata from one section into another.
@@ -1189,16 +1244,27 @@ local function valid_win(win)
   return win ~= nil and vim.api.nvim_win_is_valid(win)
 end
 
+---Determine whether a popup window can take focus.
+---@param win number|nil Window handle.
+---@return boolean focusable True when the window can be focused.
+local function focusable_popup_win(win)
+  if not valid_win(win) then
+    return false
+  end
+  local ok, cfg = pcall(vim.api.nvim_win_get_config, win)
+  if ok and cfg and cfg.focusable == false then
+    return false
+  end
+  return true
+end
+
 ---Update the set of windows that should keep focus within the popup.
 ---@return nil
 local function update_allowed_wins()
   local allowed = {}
-  for _, win in ipairs({ state.main_win, state.sidebar_win, state.summary_win, state.url_win, state.help_win }) do
-    if valid_win(win) then
-      local ok, cfg = pcall(vim.api.nvim_win_get_config, win)
-      if win ~= state.help_win or not (ok and cfg and cfg.focusable == false) then
-        table.insert(allowed, win)
-      end
+  for _, win in ipairs({ state.main_win, state.sidebar_win, state.summary_win, state.url_win, state.help_win, help_state.win }) do
+    if focusable_popup_win(win) then
+      table.insert(allowed, win)
     end
   end
   state.allowed_wins = allowed
@@ -1218,7 +1284,7 @@ end
 ---@return boolean ok True when focus is permitted.
 local function is_allowed_win(win)
   for _, allowed in ipairs(state.allowed_wins or {}) do
-    if allowed == win then
+    if allowed == win and valid_win(allowed) then
       return true
     end
   end
@@ -1380,11 +1446,8 @@ end
 local function popup_content_windows()
   local wins = {}
   for _, win in ipairs({ state.main_win, state.sidebar_win, state.summary_win, state.url_win, state.help_win }) do
-    if valid_win(win) then
-      local ok, cfg = pcall(vim.api.nvim_win_get_config, win)
-      if win ~= state.help_win or not (ok and cfg and cfg.focusable == false) then
-        table.insert(wins, win)
-      end
+    if focusable_popup_win(win) then
+      table.insert(wins, win)
     end
   end
   return wins
@@ -1541,6 +1604,7 @@ local function close_help_popup()
     buf = nil,
     bar_buf = nil,
   }
+  update_allowed_wins()
 end
 
 ---Close the active issue popup and clean up associated windows/buffers.
@@ -1655,8 +1719,9 @@ function Popup.show_help(config)
   ensure_popup_highlights()
   config = config or {}
   local dims = calculate_dimensions(config)
-  local content_lines, content_highlights = help_popup_lines(dims.width)
-  local bar_lines, bar_highlights = shortcut_bar_lines("help", dims.width)
+  local shortcut_opts = { navigation = state.navigation }
+  local content_lines, content_highlights = help_popup_lines(dims.width, shortcut_opts)
+  local bar_lines, bar_highlights = shortcut_bar_lines("help", dims.width, shortcut_opts)
   local bar_height = math.max(1, #bar_lines)
   local content_height = math.max(6, dims.height - bar_height)
 
@@ -1749,6 +1814,7 @@ function Popup.show_help(config)
     buf = buf,
     bar_buf = bar_buf,
   }
+  update_allowed_wins()
 end
 
 ---Compute the display width of text, respecting wide characters.
@@ -2401,10 +2467,11 @@ end
 
 ---Return shortcut/help bar content for the issue popup.
 ---@param width number Popup width.
+---@param opts table|nil Context for filtering shortcuts.
 ---@return string[] lines Shortcut lines.
 ---@return table highlights Highlight entries.
-local function help_bar_lines(width)
-  return shortcut_bar_lines("issue", width)
+local function help_bar_lines(width, opts)
+  return shortcut_bar_lines("issue", width, opts)
 end
 
 ---Format the popup window title with navigation hints.
@@ -3002,7 +3069,7 @@ function Popup.render(issue, config, context)
     local main_content, main_highlights = main_lines(issue, math.max(20, main_width_with_margin - 1), config)
     local sidebar_content, sidebar_highlights = sidebar_lines(issue, math.max(20, sidebar_width_with_margin - 1))
     local url_content, url_highlights = url_bar_lines(issue, config, url_width)
-    local help_content, help_highlights = help_bar_lines(url_width)
+    local help_content, help_highlights = help_bar_lines(url_width, { navigation = nav_context })
     local summary_lines, summary_highlights = summary_bar_lines(issue, summary_width)
     local url_bar_height = math.max(1, #url_content)
     local help_bar_height = math.max(1, #help_content)
