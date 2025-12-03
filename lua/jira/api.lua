@@ -507,6 +507,71 @@ function M.fetch_issue(issue_key, config, callback)
   end)
 end
 
+---Fetch only the summary for a Jira issue.
+---@param issue_key string Issue key such as "ABC-123".
+---@param config table Plugin configuration containing API credentials and base URL.
+---@param callback fun(issue:table|nil, err:string|nil) Invoked with { key, summary, url } or an error.
+---@return nil
+function M.fetch_issue_summary(issue_key, config, callback)
+  local api_config = config.api or {}
+  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
+  if base_url == "" then
+    callback(
+      nil,
+      "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable."
+    )
+    return
+  end
+
+  local auth, auth_err = utils.encode_basic_auth(
+    api_config.email or vim.env.JIRA_API_EMAIL,
+    api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY
+  )
+  if not auth then
+    callback(
+      nil,
+      string.format(
+        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
+        auth_err
+      )
+    )
+    return
+  end
+
+  local endpoint = string.format("%s/rest/api/3/issue/%s?fields=summary,status", base_url, issue_key)
+  local args = build_get_args(endpoint, auth)
+
+  run_command(args, function(payload, err)
+    if err then
+      handle_fetch_issue_error(err, issue_key, base_url, auth, function(_, message)
+        callback(nil, message)
+      end)
+      return
+    end
+    local ok, body = pcall(utils.json_decode, payload)
+    if not ok or type(body) ~= "table" then
+      callback(
+        nil,
+        string.format(
+          "Jira returned a response that could not be parsed while loading %s.",
+          format_subject_label(issue_key)
+        )
+      )
+      return
+    end
+    local fields = body.fields or {}
+    if vim and vim.NIL and fields == vim.NIL then
+      fields = {}
+    end
+    callback({
+      key = body.key or issue_key,
+      summary = utils.trim(fields.summary or ""),
+      status = fields.status or {},
+      url = base_url ~= "" and string.format("%s/browse/%s", base_url, body.key or issue_key) or "",
+    }, nil)
+  end)
+end
+
 ---Resolve the default JQL for the assigned issues popup.
 ---@param config table|nil Plugin configuration.
 ---@return string jql Trimmed JQL statement.

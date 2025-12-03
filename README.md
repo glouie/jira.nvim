@@ -13,6 +13,8 @@ popup.
   activity.
 - Sidebar highlights important metadata like status, priority, resolution,
   and assignee.
+- When your cursor rests on an issue key, the statusline (or command area)
+  shows `<KEY>: <issue summary>` between the cursor position and your mode.
 - Press `o` inside the popup to jump to the issue in your browser, or
   `Esc`/`q` to close it.
 - Popups support `/` search, `n`/`N` to repeat, `Tab`/`<S-Tab>` to swap
@@ -62,6 +64,8 @@ You can override any of these (plus visual behaviour) via
 require("jira").setup({
   keymap = "<leader>ji",
   -- key used to open the popup for the issue under the cursor
+  debug = false,
+  -- set true to log when the cursor lands on an issue key
   issue_pattern = "%u+-%d+",
   -- Lua pattern for matching issue keys
   highlight_group = "JiraIssue",
@@ -70,6 +74,20 @@ require("jira").setup({
   -- number of lines to scan for issue keys (-1 scans the whole buffer)
   ignored_projects = { "SEV" },
   -- project keys to skip when scanning for issue matches
+  statusline = {
+    enabled = true,
+    -- set to false to leave your statusline untouched
+    output = "statusline",
+    -- set to "message" to echo hover text instead of updating the statusline
+    max_length = 80,
+    -- truncate long summaries to avoid crowding the bar (0 means no limit)
+    loading_text = "Loading...",
+    -- shown while jira.nvim fetches the summary
+    error_text = "Unable to load issue",
+    -- shown when the summary request fails
+    empty_text = "No summary",
+    -- fallback when an issue has a blank summary
+  },
   assigned_popup = {
     keymap = "<leader>ja",
     -- opens the assigned-issues list popup
@@ -121,6 +139,14 @@ list, and `search_popup` for the JQL prompt/table layout. Issue tables show the
 total result count, the range currently visible, and let you move between rows
 with `j`/`k` (or `<S-N>/<S-P>`), page with `<C-f>/<C-b>`, and hit `<CR>` to
 open the selected issue without dismissing the list.
+
+Hovering over an issue key triggers a lightweight summary fetch and surfaces
+`<KEY>: <summary>` in the middle of your statusline (between the cursor
+position and your mode). Set `statusline.enabled = false` if you already manage
+your own statusline layout, then embed
+`%{v:lua.require('jira').statusline_message()}` wherever you want the Jira
+hover text to appear. Set `statusline.output = "message"` to post the hover
+text to the command area instead of touching your statusline.
 
 ## Usage
 
