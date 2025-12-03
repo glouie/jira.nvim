@@ -1,6 +1,7 @@
 # Installing jira.nvim
 
-This guide shows how to install jira.nvim with [`lazy.nvim`](https://github.com/folke/lazy.nvim) and configure it end-to-end.
+This guide shows how to install jira.nvim with
+[`lazy.nvim`](https://github.com/folke/lazy.nvim) and configure it end-to-end.
 
 ## Prerequisites
 
@@ -28,12 +29,16 @@ Then run `:Lazy sync` and restart Neovim.
 
 ## Configure
 
-If you want to customize keymaps, popup sizing, or API credentials, copy `examples/full-config.lua` into your config and tweak the values, then require it from your Neovim `init.lua` or a plugin file.
+If you want to customize keymaps, popup sizing, or API credentials, copy
+`examples/full-config.lua` into your config and tweak the values, then require
+it from your Neovim `init.lua` or a plugin file.
 
 ## Verify
 
 1) Open a buffer containing Jira issue keys (e.g. `ABC-123`).
 2) Press `<leader>ji` to open the popup.  
-3) Use `<leader>ja` to see issues assigned to you, or `<leader>js` to run a JQL search.
+3) Use `<leader>ja` to see issues assigned to you, or `<leader>js` to run a JQL
+   search.
 
-If you see credential or network errors, double-check the environment variables and your VPN connection.
+If you see credential or network errors, double-check the environment variables
+and your VPN connection.
