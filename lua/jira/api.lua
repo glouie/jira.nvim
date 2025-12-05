@@ -510,7 +510,7 @@ end
 ---Fetch only the summary for a Jira issue.
 ---@param issue_key string Issue key such as "ABC-123".
 ---@param config table Plugin configuration containing API credentials and base URL.
----@param callback fun(issue:table|nil, err:string|nil) Invoked with { key, summary, url } or an error.
+---@param callback fun(issue:table|nil, err:string|nil) Invoked with { key, summary, status, resolution, assignee, reporter, url } or an error.
 ---@return nil
 function M.fetch_issue_summary(issue_key, config, callback)
   local api_config = config.api or {}
@@ -538,7 +538,8 @@ function M.fetch_issue_summary(issue_key, config, callback)
     return
   end
 
-  local endpoint = string.format("%s/rest/api/3/issue/%s?fields=summary,status", base_url, issue_key)
+  local endpoint =
+      string.format("%s/rest/api/3/issue/%s?fields=summary,status,resolution,assignee,reporter", base_url, issue_key)
   local args = build_get_args(endpoint, auth)
 
   run_command(args, function(payload, err)
@@ -563,10 +564,40 @@ function M.fetch_issue_summary(issue_key, config, callback)
     if vim and vim.NIL and fields == vim.NIL then
       fields = {}
     end
+    local function normalize_user(user)
+      if vim and vim.NIL and user == vim.NIL then
+        return ""
+      end
+      if type(user) ~= "table" then
+        return ""
+      end
+      return utils.trim(user.displayName or user.name or user.emailAddress or "")
+    end
+    local function normalize_status(status)
+      if vim and vim.NIL and status == vim.NIL then
+        return ""
+      end
+      if type(status) ~= "table" then
+        return utils.trim(status or "")
+      end
+      return utils.trim(status.name or status.displayName or "")
+    end
+    local function normalize_resolution(resolution)
+      if vim and vim.NIL and resolution == vim.NIL then
+        return ""
+      end
+      if type(resolution) ~= "table" then
+        return utils.trim(resolution or "")
+      end
+      return utils.trim(resolution.name or resolution.description or "")
+    end
     callback({
       key = body.key or issue_key,
       summary = utils.trim(fields.summary or ""),
-      status = fields.status or {},
+      status = normalize_status(fields.status),
+      resolution = normalize_resolution(fields.resolution),
+      assignee = normalize_user(fields.assignee),
+      reporter = normalize_user(fields.reporter),
       url = base_url ~= "" and string.format("%s/browse/%s", base_url, body.key or issue_key) or "",
     }, nil)
   end)
