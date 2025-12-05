@@ -66,11 +66,12 @@ local default_config = {
   ignored_projects = { "SEV" },
   statusline = {
     enabled = true,
-    output = "statusline",
+    output = "message",
     max_length = 80,
     loading_text = "Loading...",
     error_text = "Unable to load issue",
     empty_text = "No summary",
+    message_highlight = nil,
   },
   assigned_popup = {
     keymap = "<leader>ja",
@@ -453,6 +454,16 @@ local function should_ignore_issue_key(issue_key)
   return map[project:upper()] == true
 end
 
+---Check whether lualine is available (loaded or loadable).
+---@return boolean available True when lualine can be required.
+local function lualine_available()
+  if package.loaded["lualine"] then
+    return true
+  end
+  local ok = pcall(require, "lualine")
+  return ok
+end
+
 local statusline_state = {
   cache = {},
   pending = {},
@@ -477,12 +488,18 @@ local function build_statusline_template()
 end
 
 ---Determine how hover feedback should be displayed.
----@return string mode Either "statusline" or "message".
+---@return string mode Either "statusline", "lualine", or "message".
 local function statusline_output_mode()
   local cfg = config.statusline
   local mode = cfg and cfg.output
-  if type(mode) == "string" and mode:lower() == "message" then
-    return "message"
+  if type(mode) == "string" then
+    local lowered = mode:lower():gsub("[_%s-]+", "")
+    if lowered == "message" then
+      return "message"
+    end
+    if lowered == "lualine" then
+      return "lualine"
+    end
   end
   return "statusline"
 end
@@ -524,6 +541,19 @@ local function statusline_max_length()
   return math.floor(max_len)
 end
 
+---Calculate how much horizontal space the summary may occupy.
+---@param reserved_width integer|nil Width already consumed by fixed text.
+---@return integer limit Maximum allowed width for the summary before truncation.
+local function statusline_summary_limit(reserved_width)
+  local columns = tonumber(vim.o.columns) or 0
+  local taken = math.max(0, tonumber(reserved_width) or 0)
+  local available = math.max(0, columns - taken)
+  if available > 0 then
+    return available
+  end
+  return statusline_max_length()
+end
+
 ---Escape percent characters for safe statusline interpolation.
 ---@param text string|nil Raw text.
 ---@return string escaped Escaped text suitable for statusline.
@@ -531,17 +561,44 @@ local function escape_statusline_component(text)
   return (text or ""):gsub("%%", "%%%%")
 end
 
+---Expose the raw hover text for reuse in statusline/lualine components.
+---@return string message Unescaped hover text.
+local function statusline_message_text()
+  return statusline_state.message or ""
+end
+
+---Refresh lualine without touching vim.o.statusline to avoid flicker.
+---@return boolean refreshed True when lualine refresh ran.
+local function refresh_lualine_statusline()
+  if not package.loaded["lualine"] then
+    return false
+  end
+  local ok, lualine = pcall(require, "lualine")
+  if not ok or type(lualine) ~= "table" then
+    return false
+  end
+  local refresh = lualine.refresh
+  if type(refresh) ~= "function" then
+    return false
+  end
+  refresh({ place = { "statusline" }, trigger = "jira.nvim" })
+  return true
+end
+
 ---Post hover text to the command area instead of the statusline.
 ---@param message string Hover text to display.
 ---@return nil
 local function echo_hover_message(message)
   local cleaned = utils.trim(message or "")
+  local highlight = statusline_config_value("message_highlight")
+  if highlight and not highlight_exists(highlight) then
+    highlight = nil
+  end
   if cleaned == "" then
     pcall(vim.api.nvim_echo, {}, false, {})
     return
   end
-  local display = string.format("Jira: %s", cleaned)
-  pcall(vim.api.nvim_echo, { { display } }, false, {})
+  pcall(vim.api.nvim_echo, { { cleaned, highlight } }, false, {})
 end
 
 ---Apply the custom statusline layout if requested.
@@ -579,32 +636,77 @@ end
 
 ---Format a summary for statusline display, applying truncation.
 ---@param summary string|nil Raw summary text.
+---@param max_width integer|nil Maximum width available for the summary.
 ---@return string formatted Trimmed and truncated summary.
-local function format_statusline_summary(summary)
+local function format_statusline_summary(summary, max_width)
   local text = utils.trim(summary or "")
-  local limit = statusline_max_length()
-  if limit > 0 and #text > limit then
-    text = text:sub(1, math.max(0, limit - 3)) .. "..."
+  local limit = tonumber(max_width) or 0
+  if limit <= 0 then
+    limit = statusline_max_length()
   end
-  return text
+  if limit <= 0 then
+    return text
+  end
+  local width = vim.api.nvim_strwidth(text)
+  if width <= limit then
+    return text
+  end
+  local suffix = "..."
+  local suffix_width = vim.api.nvim_strwidth(suffix)
+  if limit <= suffix_width then
+    return suffix:sub(1, limit)
+  end
+  local target = limit - suffix_width
+  local shortened = text
+  while vim.api.nvim_strwidth(shortened) > target and vim.fn.strchars(shortened) > 0 do
+    shortened = vim.fn.strcharpart(shortened, 0, vim.fn.strchars(shortened) - 1)
+  end
+  return shortened .. suffix
 end
 
 ---Build the statusline text for a given issue key and summary.
 ---@param issue_key string Issue key such as "ABC-123".
----@param summary string|nil Issue summary text.
+---@param summary string|table|nil Issue summary text or detail table.
 ---@return string text Composed statusline snippet.
 local function format_statusline_text(issue_key, summary)
   if not issue_key or issue_key == "" then
     return ""
   end
-  local clean_summary = format_statusline_summary(summary)
+  local details = {}
+  if type(summary) == "table" then
+    details = summary
+  elseif summary ~= nil then
+    details.summary = summary
+  end
+
+  local status = utils.trim(details.status or "")
+  local resolution = utils.trim(details.resolution or "")
+  local assignee = utils.trim(details.assignee or "")
+  local reporter = utils.trim(details.reporter or "")
+
+  local status_label = status ~= "" and status or "Unknown"
+  local resolution_label = resolution ~= "" and resolution or "Unresolved"
+  local assignee_label = assignee ~= "" and assignee or "Unassigned"
+  local reporter_label = reporter ~= "" and reporter or "Unknown"
+
+  local prefix = string.format("JIRA: [%s] ", issue_key)
+  local suffix = string.format(" [%s][%s] assignee: %s reporter: %s", status_label, resolution_label, assignee_label, reporter_label)
+
+  local reserved_width = vim.api.nvim_strwidth(prefix .. suffix)
+
+  local clean_summary = utils.trim(details.summary or "")
   if clean_summary == "" then
     clean_summary = utils.trim(statusline_config_value("empty_text") or "")
   end
-  if clean_summary ~= "" then
-    return string.format("%s: %s", issue_key, clean_summary)
-  end
-  return issue_key
+
+  clean_summary = format_statusline_summary(clean_summary, statusline_summary_limit(reserved_width))
+
+  return string.format(
+    "%s%s%s",
+    prefix,
+    clean_summary,
+    suffix
+  )
 end
 
 ---Update the active statusline message and refresh the UI when needed.
@@ -615,19 +717,35 @@ local function set_statusline_message(message)
   local mode = statusline_output_mode()
   local unchanged = statusline_state.message == cleaned
   statusline_state.message = cleaned
-  if statusline_updates_enabled() then
-    if mode == "message" then
-      echo_hover_message(cleaned)
-      return
-    end
-    if statusline_template_enabled() then
-      apply_statusline_template()
-    end
+  if not statusline_updates_enabled() then
+    return
+  end
+  if mode == "message" then
+    echo_hover_message(cleaned)
+    return
+  end
+  if mode == "lualine" then
     if unchanged then
       return
     end
-    pcall(vim.cmd, "redrawstatus")
+    if not refresh_lualine_statusline() then
+      pcall(vim.cmd, "redrawstatus")
+    end
+    return
   end
+
+  local template_needed = statusline_template_enabled()
+    and (not statusline_state.applied or not statusline_state.template or vim.o.statusline ~= statusline_state.template)
+
+  if template_needed then
+    apply_statusline_template()
+  end
+
+  if unchanged and not template_needed then
+    return
+  end
+
+  pcall(vim.cmd, "redrawstatus")
 end
 
 ---Clear the active hover statusline state.
@@ -641,7 +759,17 @@ end
 ---Expose the statusline message for use in statusline templates.
 ---@return string message Escaped statusline content.
 function M.statusline_message()
-  return escape_statusline_component(statusline_state.message)
+  return escape_statusline_component(statusline_message_text())
+end
+
+---Expose the hover message for consumption by lualine components.
+---@return string message Raw hover text without statusline escaping.
+function M.lualine_component()
+  local ok, message = pcall(statusline_message_text)
+  if not ok or message == nil then
+    return "jira.nvim lualine error"
+  end
+  return message or ""
 end
 
 ---Refresh the hover-driven statusline message for the current cursor position.
@@ -654,7 +782,6 @@ local function update_hover_statusline(opts)
   opts = opts or {}
   local issue_key = M.find_issue_under_cursor()
   if not issue_key or should_ignore_issue_key(issue_key) then
-    clear_statusline_message()
     return
   end
 
@@ -666,22 +793,28 @@ local function update_hover_statusline(opts)
   statusline_state.current_key = issue_key
 
   local cached = statusline_state.cache[issue_key]
-  if type(cached) == "string" and cached ~= "" then
+  local cached_complete = type(cached) == "table" and cached._complete
+  if cached then
     set_statusline_message(format_statusline_text(issue_key, cached))
+    if cached_complete or not opts.fetch then
+      return
+    end
+  end
+
+  if statusline_state.pending[issue_key] then
+    local loading_details = cached or { summary = statusline_config_value("loading_text") or "" }
+    set_statusline_message(format_statusline_text(issue_key, loading_details))
     return
   end
 
   local history_summary = statusline_summary_from_history(issue_key)
-  if history_summary and history_summary ~= "" then
-    local formatted = format_statusline_summary(history_summary)
-    statusline_state.cache[issue_key] = formatted
-    set_statusline_message(format_statusline_text(issue_key, formatted))
-    return
-  end
-
-  if statusline_state.pending[issue_key] then
-    set_statusline_message(format_statusline_text(issue_key, statusline_config_value("loading_text")))
-    return
+  if history_summary and history_summary ~= "" and not cached then
+    cached = { summary = utils.trim(history_summary), _complete = false }
+    statusline_state.cache[issue_key] = cached
+    set_statusline_message(format_statusline_text(issue_key, cached))
+    if not opts.fetch then
+      return
+    end
   end
 
   if not opts.fetch then
@@ -690,7 +823,7 @@ local function update_hover_statusline(opts)
   end
 
   statusline_state.pending[issue_key] = true
-  set_statusline_message(format_statusline_text(issue_key, statusline_config_value("loading_text")))
+  set_statusline_message(format_statusline_text(issue_key, { summary = statusline_config_value("loading_text") or "" }))
 
   api.fetch_issue_summary(issue_key, config, function(issue, err)
     vim.schedule(function()
@@ -701,11 +834,16 @@ local function update_hover_statusline(opts)
         end
         return
       end
-      local summary = issue and issue.summary or ""
-      local formatted = format_statusline_summary(summary)
-      statusline_state.cache[issue_key] = formatted
+      statusline_state.cache[issue_key] = {
+        summary = utils.trim(issue and issue.summary or ""),
+        status = issue and issue.status or "",
+        resolution = issue and issue.resolution or "",
+        assignee = issue and issue.assignee or "",
+        reporter = issue and issue.reporter or "",
+        _complete = true,
+      }
       if statusline_state.current_key == issue_key then
-        set_statusline_message(format_statusline_text(issue_key, formatted))
+        set_statusline_message(format_statusline_text(issue_key, statusline_state.cache[issue_key]))
       end
     end)
   end)
@@ -972,16 +1110,20 @@ end
 ---@return nil
 function M.setup(opts)
   opts = opts or {}
+  local requested_output = opts.statusline and opts.statusline.output
+  local statusline_opts = opts.statusline
+  if statusline_opts == false then
+    statusline_opts = { enabled = false }
+  end
   config = vim.tbl_deep_extend("force", deepcopy(default_config), opts)
   config.api = vim.tbl_deep_extend("force", deepcopy(default_config.api), opts.api or {})
   config.popup = vim.tbl_deep_extend("force", deepcopy(default_config.popup), opts.popup or {})
   config.assigned_popup = vim.tbl_deep_extend("force", deepcopy(default_config.assigned_popup), opts.assigned_popup or {})
   config.search_popup = vim.tbl_deep_extend("force", deepcopy(default_config.search_popup), opts.search_popup or {})
   config.history_popup = vim.tbl_deep_extend("force", deepcopy(default_config.history_popup), opts.history_popup or {})
-  if opts.statusline == false then
-    config.statusline = false
-  else
-    config.statusline = vim.tbl_deep_extend("force", deepcopy(default_config.statusline), opts.statusline or {})
+  config.statusline = vim.tbl_deep_extend("force", deepcopy(default_config.statusline), statusline_opts or {})
+  if not requested_output and statusline_output_mode() == "statusline" and lualine_available() then
+    config.statusline.output = "lualine"
   end
   if not statusline_template_enabled() and statusline_state.applied and statusline_state.original then
     vim.o.statusline = statusline_state.original

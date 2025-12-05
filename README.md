@@ -13,8 +13,10 @@ popup.
   activity.
 - Sidebar highlights important metadata like status, priority, resolution,
   and assignee.
-- When your cursor rests on an issue key, the statusline (or command area)
-  shows `<KEY>: <issue summary>` between the cursor position and your mode.
+- When your cursor rests on an issue key, the command area (below your
+  statusline) shows `<KEY>: <issue summary>`. The hover text sticks around
+  until you move the cursor to another issue key or leave the window. You can
+  opt into statusline/lualine placement instead.
 - Press `o` inside the popup to jump to the issue in your browser, or
   `Esc`/`q` to close it.
 - Popups support `/` search, `n`/`N` to repeat, `Tab`/`<S-Tab>` to swap
@@ -77,8 +79,8 @@ require("jira").setup({
   statusline = {
     enabled = true,
     -- set to false to leave your statusline untouched
-    output = "statusline",
-    -- set to "message" to echo hover text instead of updating the statusline
+    output = "message",
+    -- "message" shows in the command area; use "statusline" or "lualine" to embed it there
     max_length = 80,
     -- truncate long summaries to avoid crowding the bar (0 means no limit)
     loading_text = "Loading...",
@@ -87,6 +89,8 @@ require("jira").setup({
     -- shown when the summary request fails
     empty_text = "No summary",
     -- fallback when an issue has a blank summary
+    message_highlight = nil,
+    -- highlight group used when output = "message" (for color/bold/italic)
   },
   assigned_popup = {
     keymap = "<leader>ja",
@@ -141,12 +145,30 @@ with `j`/`k` (or `<S-N>/<S-P>`), page with `<C-f>/<C-b>`, and hit `<CR>` to
 open the selected issue without dismissing the list.
 
 Hovering over an issue key triggers a lightweight summary fetch and surfaces
-`<KEY>: <summary>` in the middle of your statusline (between the cursor
-position and your mode). Set `statusline.enabled = false` if you already manage
-your own statusline layout, then embed
-`%{v:lua.require('jira').statusline_message()}` wherever you want the Jira
-hover text to appear. Set `statusline.output = "message"` to post the hover
-text to the command area instead of touching your statusline.
+`<KEY>: <summary>` in the command area by default (under your statusline).
+Set `statusline.output = "statusline"` to use the built-in statusline layout,
+or `statusline.output = "lualine"` to feed the built-in lualine component
+without touching `vim.o.statusline`. If you already manage your own
+statusline layout, keep `statusline.enabled = false` and embed
+`%{v:lua.require('jira').statusline_message()}` (or add
+`require("jira").lualine_component` to your lualine config) wherever you want
+the Jira hover text to appear. Setting `statusline = false` behaves the same
+as `statusline.enabled = false` while still keeping the hover text available
+for manual placement. When `output = "message"`, set `statusline.message_highlight`
+to a highlight group name if you want colored/bold/italic hover text in the
+command area.
+
+Example lualine component:
+
+```lua
+require("lualine").setup({
+  sections = {
+    lualine_c = {
+      require("jira").lualine_component,
+    },
+  },
+})
+```
 
 ## Usage
 
