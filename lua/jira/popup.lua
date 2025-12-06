@@ -1086,6 +1086,10 @@ local list_state = {
   container_buf = nil,
   bar_win = nil,
   bar_buf = nil,
+  preview_win = nil,
+  preview_buf = nil,
+  preview_source_buf = nil,
+  preview_height = nil,
 }
 
 local help_state = {
@@ -1130,9 +1134,11 @@ local function close_issue_list()
   close_window(list_state.bar_win)
   close_window(list_state.win)
   close_window(list_state.container_win)
+  close_window(list_state.preview_win)
   wipe_buffer(list_state.bar_buf)
   wipe_buffer(list_state.buf)
   wipe_buffer(list_state.container_buf)
+  wipe_buffer(list_state.preview_buf)
   list_state = {
     win = nil,
     buf = nil,
@@ -1152,7 +1158,87 @@ local function close_issue_list()
     container_buf = nil,
     bar_win = nil,
     bar_buf = nil,
+    preview_win = nil,
+    preview_buf = nil,
+    preview_source_buf = nil,
+    preview_height = nil,
   }
+end
+
+---Center a preview window on a specific line.
+---@param win number|nil Window handle.
+---@param line integer|nil 1-indexed line to center.
+local function center_preview_on_line(win, line)
+  if not win or not vim.api.nvim_win_is_valid(win) or not line then
+    return
+  end
+  pcall(vim.api.nvim_win_set_cursor, win, { line, 0 })
+  pcall(vim.api.nvim_win_call, win, function()
+    pcall(vim.cmd, "normal! zz")
+  end)
+end
+
+---Update the preview pane to show context around the selected issue.
+---@param issue table|nil Issue entry containing at least `line` and `key`.
+local function render_issue_list_preview(issue)
+  local preview_buf = list_state.preview_buf
+  local preview_win = list_state.preview_win
+  local source_buf = list_state.preview_source_buf
+  if not preview_buf or not preview_win or not source_buf then
+    return
+  end
+  if not vim.api.nvim_buf_is_valid(preview_buf) or not vim.api.nvim_buf_is_valid(source_buf) or not vim.api.nvim_win_is_valid(preview_win) then
+    return
+  end
+
+  vim.bo[preview_buf].modifiable = true
+  vim.api.nvim_buf_clear_namespace(preview_buf, list_ns, 0, -1)
+
+  if not issue or not issue.line then
+    vim.api.nvim_buf_set_lines(preview_buf, 0, -1, false, { "Select an issue to view context." })
+    vim.bo[preview_buf].modifiable = false
+    return
+  end
+
+  local total_lines = vim.api.nvim_buf_line_count(source_buf)
+  local target_line = math.min(total_lines, math.max(1, issue.line))
+  local preview_height = vim.api.nvim_win_get_height(preview_win)
+  if not preview_height or preview_height <= 0 then
+    preview_height = list_state.preview_height or 0
+  end
+  preview_height = math.max(3, preview_height)
+  local half_span = math.floor(preview_height / 2)
+
+  local start_line = target_line - half_span
+  local end_line = target_line + half_span
+  if end_line - start_line + 1 < preview_height then
+    end_line = start_line + preview_height - 1
+  end
+  if start_line < 1 then
+    end_line = math.min(total_lines, end_line + (1 - start_line))
+    start_line = 1
+  end
+  if end_line > total_lines then
+    local diff = end_line - total_lines
+    start_line = math.max(1, start_line - diff)
+    end_line = total_lines
+  end
+
+  local context_lines = vim.api.nvim_buf_get_lines(source_buf, start_line - 1, end_line, false)
+  vim.api.nvim_buf_set_lines(preview_buf, 0, -1, false, context_lines)
+  for offset, _ in ipairs(context_lines) do
+    local line_no = start_line + offset - 1
+    vim.api.nvim_buf_set_extmark(preview_buf, list_ns, offset - 1, 0, {
+      virt_text = { { string.format("%4d ", line_no), "LineNr" } },
+      virt_text_pos = "inline",
+      hl_mode = "combine",
+    })
+  end
+  vim.bo[preview_buf].modifiable = false
+
+  local highlight_line = target_line - start_line + 1
+  vim.api.nvim_buf_add_highlight(preview_buf, list_ns, "JiraPopupListSelection", highlight_line - 1, 0, -1)
+  center_preview_on_line(preview_win, highlight_line)
 end
 
 ---Refresh the visual selection highlight within the issue list.
@@ -1176,6 +1262,7 @@ local function refresh_issue_list_selection()
   if list_state.win and vim.api.nvim_win_is_valid(list_state.win) then
     vim.api.nvim_win_set_cursor(list_state.win, { target_line + 1, 0 })
   end
+  render_issue_list_preview(list_state.issues[list_state.selection])
 end
 
 ---Convert the current cursor position to a list row index.
@@ -2944,6 +3031,25 @@ function Popup.render_issue_list(issues, config, opts)
   local dims = list_dimensions(config, layout_cfg)
   local border = layout_cfg.border or (config.popup and config.popup.border) or "rounded"
   local title = opts.title or layout_cfg.title or "Assigned Issues"
+  local preview_source_buf = opts.preview_bufnr or (opts.preview and opts.preview.bufnr) or nil
+  if preview_source_buf and not vim.api.nvim_buf_is_valid(preview_source_buf) then
+    preview_source_buf = nil
+  end
+
+  local list_width = dims.width
+  local preview_width
+  if preview_source_buf then
+    list_width = math.max(20, math.floor(dims.width * 0.45))
+    preview_width = dims.width - list_width
+    if preview_width < 20 then
+      preview_width = 20
+      list_width = math.max(10, dims.width - preview_width)
+    end
+    if preview_width <= 0 then
+      preview_width = math.max(10, math.floor(dims.width / 2))
+      list_width = math.max(10, dims.width - preview_width)
+    end
+  end
 
   local container_buf = vim.api.nvim_create_buf(false, true)
   vim.bo[container_buf].bufhidden = "wipe"
@@ -2975,7 +3081,7 @@ function Popup.render_issue_list(issues, config, opts)
   local win = vim.api.nvim_open_win(buf, true, {
     relative = "win",
     win = container_win,
-    width = dims.width,
+    width = list_width,
     height = content_height,
     col = 0,
     row = 0,
@@ -3005,6 +3111,7 @@ function Popup.render_issue_list(issues, config, opts)
 
   local content_dims = vim.deepcopy(dims)
   content_dims.height = content_height
+  content_dims.width = list_width
 
   local layout = build_issue_list_lines(issues, content_dims, {
     title = title,
@@ -3047,7 +3154,41 @@ function Popup.render_issue_list(issues, config, opts)
     container_buf = container_buf,
     bar_win = bar_win,
     bar_buf = bar_buf,
+    preview_win = nil,
+    preview_buf = nil,
+    preview_source_buf = preview_source_buf,
+    preview_height = content_height,
   }
+
+  if preview_source_buf then
+    local preview_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[preview_buf].bufhidden = "wipe"
+    vim.bo[preview_buf].swapfile = false
+    vim.bo[preview_buf].buftype = "nofile"
+    local source_filetype = vim.bo[preview_source_buf].filetype
+    if source_filetype and source_filetype ~= "" then
+      vim.bo[preview_buf].filetype = source_filetype
+    else
+      vim.bo[preview_buf].filetype = "jira_popup_preview"
+    end
+    local preview_win = vim.api.nvim_open_win(preview_buf, false, {
+      relative = "win",
+      win = container_win,
+      width = preview_width,
+      height = content_height,
+      col = list_width,
+      row = 0,
+      style = "minimal",
+      border = "none",
+      focusable = false,
+    })
+    vim.api.nvim_win_set_option(preview_win, "wrap", false)
+    vim.api.nvim_buf_set_lines(preview_buf, 0, -1, false, { "Select an issue to view context." })
+    vim.bo[preview_buf].modifiable = false
+
+    list_state.preview_win = preview_win
+    list_state.preview_buf = preview_buf
+  end
 
   if list_state.selection then
     refresh_issue_list_selection()
@@ -3061,7 +3202,7 @@ function Popup.render_issue_list(issues, config, opts)
       if not closed then
         return
       end
-      if closed == list_state.win or closed == list_state.container_win or closed == list_state.bar_win then
+      if closed == list_state.win or closed == list_state.container_win or closed == list_state.bar_win or closed == list_state.preview_win then
         close_issue_list()
       end
     end,

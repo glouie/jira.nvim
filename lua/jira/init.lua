@@ -95,6 +95,13 @@ local default_config = {
     border = "rounded",
     history_size = 200,
   },
+  buffer_popup = {
+    keymap = "<leader>jb",
+    width = 0.55,
+    height = 0.5,
+    border = "rounded",
+    close_on_select = true,
+  },
   popup = {
     width = 0.65,
     height = 0.75,
@@ -870,7 +877,7 @@ end
 
 ---Collect all Jira issue keys present in a buffer.
 ---@param bufnr number Buffer handle.
----@return table issues List of tables containing `key` fields.
+---@return table issues List of issue entries containing `key`, `line`, `col`, and `preview`.
 local function collect_buffer_issues(bufnr)
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
     return {}
@@ -882,7 +889,7 @@ local function collect_buffer_issues(bufnr)
   local issues = {}
   local seen = {}
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  for _, line in ipairs(lines) do
+  for line_idx, line in ipairs(lines) do
     local start = 1
     while true do
       local s, e = line:find(pattern, start)
@@ -892,12 +899,83 @@ local function collect_buffer_issues(bufnr)
       local key = line:sub(s, e)
       if key ~= "" and not seen[key] and not should_ignore_issue_key(key) then
         seen[key] = true
-        table.insert(issues, { key = key })
+        table.insert(issues, {
+          key = key,
+          line = line_idx,
+          col = s,
+          preview = utils.trim(line),
+        })
       end
       start = e + 1
     end
   end
   return issues
+end
+
+---Build a single-line preview with location for a buffer issue entry.
+---@param issue table Issue entry containing key, line, col, and preview.
+---@return string summary Human-readable summary with line/col context.
+local function buffer_issue_summary(issue)
+  if not issue then
+    return ""
+  end
+  local preview = issue.preview or issue.line_text or ""
+  preview = utils.trim(preview:gsub("%s+", " "))
+  if issue.key and issue.key ~= "" and preview ~= "" then
+    local escaped = (vim and vim.pesc and vim.pesc(issue.key)) or issue.key:gsub("(%W)", "%%%1")
+    preview = utils.trim(preview:gsub(escaped, ""))
+    preview = utils.trim(preview:gsub("%s+", " "))
+  end
+  if preview ~= "" then
+    return preview
+  end
+  if issue.line and issue.col then
+    return string.format("L%d:%d", issue.line, issue.col)
+  elseif issue.line then
+    return string.format("L%d", issue.line)
+  end
+  return ""
+end
+
+---Fetch summaries for a collection of issue keys via Jira search.
+---@param issue_keys string[] List of issue keys to hydrate.
+---@param callback fun(map:table|nil, err:string|nil) Invoked with map[key]=summary or an error.
+---@return nil
+local function fetch_issue_summaries(issue_keys, callback)
+  if not issue_keys or #issue_keys == 0 then
+    callback({}, nil)
+    return
+  end
+  local keys = {}
+  local seen = {}
+  for _, key in ipairs(issue_keys) do
+    if type(key) == "string" and key ~= "" and not seen[key] then
+      table.insert(keys, key)
+      seen[key] = true
+    end
+  end
+  if #keys == 0 then
+    callback({}, nil)
+    return
+  end
+  local jql = string.format("issuekey in (%s)", table.concat(keys, ", "))
+  api.search_issues(config, {
+    jql = jql,
+    max_results = math.min(#keys, 200),
+    fields = { "key", "summary", "status" },
+  }, function(result, err)
+    if err or not result then
+      callback(nil, err or "Unable to fetch Jira issue summaries.")
+      return
+    end
+    local map = {}
+    for _, issue in ipairs(result.issues or {}) do
+      if issue and issue.key then
+        map[issue.key] = utils.trim(issue.summary or "")
+      end
+    end
+    callback(map, nil)
+  end)
 end
 
 ---Find the index of a specific issue key in a list of issues.
@@ -1140,6 +1218,7 @@ function M.setup(opts)
   config.assigned_popup = vim.tbl_deep_extend("force", deepcopy(default_config.assigned_popup), opts.assigned_popup or {})
   config.search_popup = vim.tbl_deep_extend("force", deepcopy(default_config.search_popup), opts.search_popup or {})
   config.history_popup = vim.tbl_deep_extend("force", deepcopy(default_config.history_popup), opts.history_popup or {})
+  config.buffer_popup = vim.tbl_deep_extend("force", deepcopy(default_config.buffer_popup), opts.buffer_popup or {})
   config.statusline = vim.tbl_deep_extend("force", deepcopy(default_config.statusline), statusline_opts or {})
   if not requested_output and statusline_output_mode() == "statusline" and lualine_available() then
     config.statusline.output = "lualine"
@@ -1177,6 +1256,12 @@ function M.setup(opts)
     vim.keymap.set("n", search_keymap, function()
       M.open_jql_search()
     end, { desc = "jira.nvim: search Jira via JQL" })
+  end
+  local buffer_keymap = config.buffer_popup and config.buffer_popup.keymap
+  if buffer_keymap and buffer_keymap ~= "" then
+    vim.keymap.set("n", buffer_keymap, function()
+      M.open_buffer_issue_list()
+    end, { desc = "jira.nvim: list buffer issues" })
   end
   local history_keymap = config.history_popup and config.history_popup.keymap
   if history_keymap and history_keymap ~= "" then
@@ -1248,6 +1333,78 @@ function M.open_issue_under_cursor()
   local bufnr = vim.api.nvim_get_current_buf()
   local nav = update_navigation_from_buffer(bufnr, issue)
   M.open_issue(issue, { navigation = nav })
+end
+
+---List all Jira issue keys found in the current buffer.
+---@return nil
+function M.open_buffer_issue_list()
+  local bufnr = vim.api.nvim_get_current_buf()
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  local origin_win = vim.api.nvim_get_current_win()
+  local issues = collect_buffer_issues(bufnr)
+  local entries = {}
+  local issue_keys = {}
+  for _, item in ipairs(issues) do
+    table.insert(issue_keys, item.key)
+    table.insert(entries, {
+      key = item.key,
+      summary = buffer_issue_summary(item),
+      line = item.line,
+      col = item.col,
+    })
+  end
+
+  local function render_list(render_entries)
+    popup.render_issue_list(render_entries, config, {
+      title = "Issues in Buffer",
+      subtitle = string.format("%d matches in buffer", #render_entries),
+      empty_message = "No Jira issue keys found in this buffer.",
+      layout = config.buffer_popup,
+      preview = { bufnr = bufnr },
+      close_on_select = config.buffer_popup and config.buffer_popup.close_on_select,
+      on_select = function(issue)
+        local nav = update_navigation_from_buffer(bufnr, issue.key)
+        local opts = { navigation = nav }
+        if origin_win and vim.api.nvim_win_is_valid(origin_win) then
+          opts.return_focus = origin_win
+        end
+        M.open_issue(issue.key, opts)
+      end,
+    })
+  end
+
+  if #issue_keys == 0 then
+    render_list(entries)
+    return
+  end
+
+  fetch_issue_summaries(issue_keys, function(summary_map, err)
+    local enriched = {}
+    for _, entry in ipairs(entries) do
+      local summary = summary_map and summary_map[entry.key]
+      local final_summary = entry.summary
+      if summary and summary ~= "" then
+        final_summary = summary
+      end
+      table.insert(enriched, {
+        key = entry.key,
+        summary = final_summary,
+        line = entry.line,
+        col = entry.col,
+      })
+    end
+    vim.schedule(function()
+      if err then
+        vim.notify(
+          string.format("jira.nvim: failed to load Jira summaries for buffer issues: %s", err),
+          vim.log.levels.WARN
+        )
+      end
+      render_list(enriched)
+    end)
+  end)
 end
 
 ---Re-run highlighting for Jira issue keys in the target buffer.

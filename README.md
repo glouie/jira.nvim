@@ -22,6 +22,8 @@ popup.
 - Popups support `/` search, `n`/`N` to repeat, `Tab`/`<S-Tab>` to swap
   panes, and `<C-n>`/`<C-p>` to hop between other issue matches in the
   buffer without leaving the view.
+- `<leader>jb` opens a fzf-style list of issue keys in the current buffer with
+  line context so you can jump straight into their details.
 - `<leader>ja` shows a quick table of unresolved issues assigned to you so
   you can jump straight into the one you care about.
 - `<leader>js` opens a highlighted JQL prompt with inline help and
@@ -116,6 +118,15 @@ require("jira").setup({
     history_size = 200,
     -- how many unique issues to keep (oldest drop off)
   },
+  buffer_popup = {
+    keymap = "<leader>jb",
+    -- lists all detected issue keys in the current buffer
+    width = 0.55,
+    height = 0.5,
+    border = "rounded",
+    close_on_select = true,
+    -- close the picker after opening an issue from it
+  },
   popup = {
     width = 0.6,
     height = 0.7,
@@ -141,10 +152,12 @@ beside it in `issue_history.json` and is deduplicated by key; set
 many lines in the current buffer are scanned for issue keys when you only want
 to underline the top of very large files. Customize `assigned_popup` to tweak
 the keybinding, size, or number of issues returned by the "assigned to me"
-list, and `search_popup` for the JQL prompt/table layout. Issue tables show the
-total result count, the range currently visible, and let you move between rows
-with `j`/`k` (or `<S-N>/<S-P>`), page with `<C-f>/<C-b>`, and hit `<CR>` to
-open the selected issue without dismissing the list.
+list, `search_popup` for the JQL prompt/table layout, and `buffer_popup` to
+control the in-buffer picker (size, border, and whether it closes after
+selection). Issue tables show the total result count, the range currently
+visible, and let you move between rows with `j`/`k` (or `<S-N>/<S-P>`), page
+with `<C-f>/<C-b>`, and hit `<CR>` to open the selected issue without
+dismissing the list.
 
 The Details sidebar rows follow `popup.details_fields`, which accepts a list to
 set both the fields and their order (defaults keep labels at the bottom). Use it
@@ -188,11 +201,13 @@ require("lualine").setup({
    previous issue match in the buffer; `o` to open the issue in a browser;
    place the cursor on any URL and press `<CR>` or Cmd+click (macOS)/Ctrl+click
    (Windows) to open it; `Esc` or `q` to close it.
-5. Press `<leader>ja` to see unresolved issues assigned to you, `<leader>js`
-   to enter a JQL query and page through the matches, or `<leader>jh` to
-   reopen something you viewed recently (history is deduped and persisted
-   between sessions). Use `j`/`k` (or `<S-N>/<S-P>`) to move through the list,
-   `<CR>` to open an issue (the list stays open so you can come right back),
+5. Press `<leader>jb` to list every issue key in the current buffer (with line
+   numbers) and open one with `<CR>`. Press `<leader>ja` to see unresolved
+   issues assigned to you, `<leader>js` to enter a JQL query and page through
+   the matches, or `<leader>jh` to reopen something you viewed recently
+   (history is deduped and persisted between sessions). Use `j`/`k` (or
+   `<S-N>/<S-P>`) to move through the list, `<CR>` to open an issue (the buffer
+   picker closes by default; other lists stay open so you can come right back),
    `<C-f>/<C-b>` to change pages, and `q`/`Esc` to close the popup(s).
 
 Inside the JQL prompt, `Esc` drops you into Normal mode so you can
