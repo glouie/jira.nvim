@@ -120,6 +120,8 @@ require("jira").setup({
     width = 0.6,
     height = 0.7,
     border = "rounded",
+    details_fields = { "key", "status", "priority", "assignee", "reporter", "labels" },
+    -- choose which fields render in the Details sidebar and their order
   },
   api = {
     base_url = os.getenv("JIRA_BASE_URL"),
@@ -143,6 +145,10 @@ list, and `search_popup` for the JQL prompt/table layout. Issue tables show the
 total result count, the range currently visible, and let you move between rows
 with `j`/`k` (or `<S-N>/<S-P>`), page with `<C-f>/<C-b>`, and hit `<CR>` to
 open the selected issue without dismissing the list.
+
+The Details sidebar rows follow `popup.details_fields`, which accepts a list to
+set both the fields and their order (defaults keep labels at the bottom). Use it
+to hide entries you do not care about or to elevate the ones you check often.
 
 Hovering over an issue key triggers a lightweight summary fetch and surfaces
 `<KEY>: <summary>` in the command area by default (under your statusline).

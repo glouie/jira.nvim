@@ -136,6 +136,20 @@ local severity_rules = {
   { level = 3, keywords = { "sev2", "sev-2", "medium" } },
   { level = 4, keywords = { "sev3", "sev-3", "low", "minor", "trivial" } },
 }
+local detail_label_palette = {
+  catppuccin.peach,
+  catppuccin.sky,
+  catppuccin.lavender,
+  catppuccin.green,
+  catppuccin.rosewater,
+  catppuccin.mauve,
+  catppuccin.teal,
+  catppuccin.yellow,
+  catppuccin.pink,
+  catppuccin.maroon,
+  catppuccin.blue,
+}
+local detail_label_groups = {}
 local fill_buffer
 
 ---Return the shortcut section filtered by runtime context.
@@ -334,12 +348,13 @@ end
 ---@param store table Highlight accumulator.
 ---@param line number Line index.
 ---@param label string Label text.
+---@param group string|nil Optional highlight group override.
 ---@return nil
-local function highlight_label_portion(store, line, label)
+local function highlight_label_portion(store, line, label, group)
   if not store or not label or label == "" then
     return
   end
-  add_highlight_entry(store, "JiraPopupLabel", line, 0, #label + 1)
+  add_highlight_entry(store, group or "JiraPopupLabel", line, 0, #label + 1)
 end
 
 ---Highlight an entire line with a given group.
@@ -565,6 +580,27 @@ local function highlight_group_for_user(name, inactive)
   })
   user_highlight_cache[name] = group
   return group
+end
+
+---Return a distinct highlight group for detail labels, cycling a palette.
+---@param index integer Label index for stable color selection.
+---@return string group Highlight group name.
+local function detail_label_highlight(index)
+  if not index or index < 1 or #detail_label_palette == 0 then
+    return "JiraPopupLabel"
+  end
+  ensure_popup_highlights()
+  local palette_idx = ((index - 1) % #detail_label_palette) + 1
+  if not detail_label_groups[palette_idx] then
+    local group = string.format("JiraPopupDetailsLabel%d", palette_idx)
+    vim.api.nvim_set_hl(0, group, {
+      default = true,
+      fg = detail_label_palette[palette_idx],
+      bold = true,
+    })
+    detail_label_groups[palette_idx] = group
+  end
+  return detail_label_groups[palette_idx]
 end
 
 ---Determine a numeric level based on keyword rules.
@@ -1999,6 +2035,52 @@ local function version_list_display(values)
   return table.concat(names, ", ")
 end
 
+---Return a comma-separated label list from Jira label values.
+---@param values table|string|nil Label field value.
+---@return string text Comma-separated labels.
+---@return table|nil segments Highlight offsets for each label value.
+local function label_list_display(values)
+  local function build_display(names)
+    if not names or #names == 0 then
+      return "", nil
+    end
+    local parts = {}
+    local segments = {}
+    local cursor = 0
+    for idx, name in ipairs(names) do
+      table.insert(parts, name)
+      table.insert(segments, { start = cursor, finish = cursor + #name })
+      cursor = cursor + #name
+      if idx < #names then
+        local separator = ", "
+        table.insert(parts, separator)
+        cursor = cursor + #separator
+      end
+    end
+    return table.concat(parts, ""), segments
+  end
+
+  if (vim and vim.NIL and values == vim.NIL) or not values then
+    return "", nil
+  end
+  if type(values) == "string" then
+    if values == "" then
+      return "", nil
+    end
+    return build_display({ values })
+  end
+  if type(values) ~= "table" then
+    return "", nil
+  end
+  local names = {}
+  for _, item in ipairs(values) do
+    if type(item) == "string" and item ~= "" then
+      table.insert(names, item)
+    end
+  end
+  return build_display(names)
+end
+
 ---Calculate how long an issue has been open, if resolved.
 ---@param issue table Jira issue object.
 ---@return string label Human readable duration or status text.
@@ -2148,13 +2230,53 @@ local function format_assignee_history(users)
   return table.concat(parts), segments
 end
 
----Build sidebar metadata lines for an issue detail popup.
+local default_detail_fields = {
+  "key",
+  "status",
+  "resolution",
+  "priority",
+  "severity",
+  "assignee",
+  "reporter",
+  "created",
+  "updated",
+  "due",
+  "fix_versions",
+  "affects_versions",
+  "open_duration",
+  "comments",
+  "changes",
+  "assignees",
+  "labels",
+}
+
+---Normalize a detail field entry from configuration.
+---@param field any Configured field entry.
+---@return table|nil normalized Table with name/label or nil when invalid.
+local function normalize_detail_field(field)
+  if type(field) == "string" then
+    return { name = field:lower() }
+  end
+  if type(field) ~= "table" then
+    return nil
+  end
+  local name = field.field or field.name
+  if type(name) ~= "string" or name == "" then
+    return nil
+  end
+  local normalized = { name = name:lower() }
+  if type(field.label) == "string" and field.label ~= "" then
+    normalized.label = field.label
+  end
+  return normalized
+end
+
+---Build metadata entries in the configured order.
 ---@param issue table Jira issue object.
----@param width integer Sidebar width.
----@return string[] lines Sidebar text lines.
----@return table highlights Highlight entries for sidebar.
-local function sidebar_lines(issue, width)
-  local fields = issue.fields or {}
+---@param fields table Jira fields table.
+---@param configured_fields table|nil User-specified field order.
+---@return table metadata Ordered list of metadata entries.
+local function build_detail_metadata(issue, fields, configured_fields)
   local resolution = fields.resolution
   if vim and vim.NIL and resolution == vim.NIL then
     resolution = nil
@@ -2172,55 +2294,120 @@ local function sidebar_lines(issue, width)
   local total_changes = change_count(issue)
   local assignee_sequence = assignee_history(issue)
   local assignee_history_display, assignee_history_segments = format_assignee_history(assignee_sequence)
-  local metadata = {
-    { label = "Key", value = issue.key, highlight = "key" },
-    { label = "Status", value = fields.status and fields.status.name },
-    { label = "Resolution", value = resolution_name },
-    { label = "Priority", value = fields.priority and fields.priority.name, highlight = "priority" },
-    { label = "Severity", value = utils.get_severity(issue), highlight = "severity" },
-    { label = "Assignee", value = assignee_name, highlight = "user", inactive = assignee_inactive },
-    { label = "Reporter", value = reporter_name, highlight = "user", inactive = reporter_inactive },
-    { label = "Created", value = utils.format_date(fields.created), timestamp = true },
-    { label = "Updated", value = utils.format_date(fields.updated), timestamp = true },
-    { label = "Due", value = utils.format_date(fields.duedate), timestamp = true },
-    {
-      label = "Fix Versions",
-      value = version_list_display(fields.fixVersions),
-      highlight = "version",
-    },
-    {
-      label = "Affects Versions",
-      value = version_list_display(fields.versions or fields.affectedVersions),
-      highlight = "version",
-    },
-    {
-      label = "Open Duration",
-      value = open_duration_value,
-      highlight = "open_duration",
-      still_open = still_open,
-    },
-    {
-      label = "Comments",
-      value = tostring(total_comments),
-    },
-    {
-      label = "Changes",
-      value = tostring(total_changes),
-    },
-    {
-      label = "Assignees",
-      value = assignee_history_display,
-      highlight = assignee_history_segments and "assignee_history" or nil,
-      segments = assignee_history_segments,
-    },
+  local severity_value = utils.get_severity(issue)
+  local created_value = utils.format_date(fields.created)
+  local updated_value = utils.format_date(fields.updated)
+  local due_value = utils.format_date(fields.duedate)
+  local field_order = default_detail_fields
+  if type(configured_fields) == "table" and next(configured_fields) ~= nil then
+    field_order = configured_fields
+  end
+
+  local builders = {
+    key = function()
+      return { label = "Key", value = issue.key, highlight = "key" }
+    end,
+    status = function()
+      return { label = "Status", value = fields.status and fields.status.name }
+    end,
+    resolution = function()
+      return { label = "Resolution", value = resolution_name }
+    end,
+    priority = function()
+      return { label = "Priority", value = fields.priority and fields.priority.name, highlight = "priority" }
+    end,
+    severity = function()
+      return { label = "Severity", value = severity_value, highlight = "severity" }
+    end,
+    labels = function()
+      local display, segments = label_list_display(fields.labels)
+      return { label = "Labels", value = display, highlight = "labels", segments = segments }
+    end,
+    assignee = function()
+      return { label = "Assignee", value = assignee_name, highlight = "user", inactive = assignee_inactive }
+    end,
+    reporter = function()
+      return { label = "Reporter", value = reporter_name, highlight = "user", inactive = reporter_inactive }
+    end,
+    created = function()
+      return { label = "Created", value = created_value, timestamp = true }
+    end,
+    updated = function()
+      return { label = "Updated", value = updated_value, timestamp = true }
+    end,
+    due = function()
+      return { label = "Due", value = due_value, timestamp = true }
+    end,
+    fix_versions = function()
+      return { label = "Fix Versions", value = version_list_display(fields.fixVersions), highlight = "version" }
+    end,
+    affects_versions = function()
+      return {
+        label = "Affects Versions",
+        value = version_list_display(fields.versions or fields.affectedVersions),
+        highlight = "version",
+      }
+    end,
+    open_duration = function()
+      return {
+        label = "Open Duration",
+        value = open_duration_value,
+        highlight = "open_duration",
+        still_open = still_open,
+      }
+    end,
+    comments = function()
+      return { label = "Comments", value = tostring(total_comments) }
+    end,
+    changes = function()
+      return { label = "Changes", value = tostring(total_changes) }
+    end,
+    assignees = function()
+      return {
+        label = "Assignees",
+        value = assignee_history_display,
+        highlight = assignee_history_segments and "assignee_history" or nil,
+        segments = assignee_history_segments,
+      }
+    end,
   }
+
+  local metadata = {}
+  for _, field in ipairs(field_order) do
+    local normalized = normalize_detail_field(field)
+    if normalized then
+      local builder = builders[normalized.name]
+      if builder then
+        local entry = builder()
+        if entry then
+          if normalized.label then
+            entry.label = normalized.label
+          end
+          table.insert(metadata, entry)
+        end
+      end
+    end
+  end
+  return metadata
+end
+
+---Build sidebar metadata lines for an issue detail popup.
+---@param issue table Jira issue object.
+---@param width integer Sidebar width.
+---@param config table|nil Plugin configuration for popup layout.
+---@return string[] lines Sidebar text lines.
+---@return table highlights Highlight entries for sidebar.
+local function sidebar_lines(issue, width, config)
+  local fields = issue.fields or {}
+  local configured_fields = config and config.popup and config.popup.details_fields
+  local metadata = build_detail_metadata(issue, fields, configured_fields)
 
   local lines = { "Details", string.rep("-", math.max(10, width - 2)) }
   local highlights = {}
   highlight_full_line(highlights, "JiraPopupDetailsHeader", 0, lines[1])
   highlight_full_line(highlights, "JiraPopupDetailsHeader", 1, lines[2])
 
-  for _, entry in ipairs(metadata) do
+  for idx, entry in ipairs(metadata) do
     local label = entry.label
     local value = utils.blank_if_nil(entry.value)
     if type(value) ~= "string" then
@@ -2229,7 +2416,8 @@ local function sidebar_lines(issue, width)
     local text = string.format("%s: %s", label, value)
     table.insert(lines, text)
     local line_idx = #lines - 1
-    highlight_label_portion(highlights, line_idx, label)
+    local label_group = detail_label_highlight(idx)
+    highlight_label_portion(highlights, line_idx, label, label_group)
     highlight_full_line(highlights, "JiraPopupDetailsBody", line_idx, text)
     local start_col = #label + 2
     if entry.timestamp and type(value) == "string" and value ~= "-" then
@@ -2258,8 +2446,14 @@ local function sidebar_lines(issue, width)
         local group = highlight_group_for_user(segment.name, false) or "JiraPopupUser"
         add_highlight_entry(highlights, group, line_idx, start_col + segment.start, start_col + segment.finish)
       end
+    elseif entry.highlight == "labels" and entry.segments then
+      for idx, segment in ipairs(entry.segments) do
+        local group = detail_label_highlight(idx)
+        add_highlight_entry(highlights, group, line_idx, start_col + segment.start, start_col + segment.finish)
+      end
     end
   end
+
   return lines, highlights
 end
 
@@ -3067,7 +3261,6 @@ function Popup.render(issue, config, context)
     track_buf(help_buf)
 
     local main_content, main_highlights = main_lines(issue, math.max(20, main_width_with_margin - 1), config)
-    local sidebar_content, sidebar_highlights = sidebar_lines(issue, math.max(20, sidebar_width_with_margin - 1))
     local url_content, url_highlights = url_bar_lines(issue, config, url_width)
     local help_content, help_highlights = help_bar_lines(url_width, { navigation = nav_context })
     local summary_lines, summary_highlights = summary_bar_lines(issue, summary_width)
@@ -3102,6 +3295,8 @@ function Popup.render(issue, config, context)
       scrollable_height = math.max(4, content_height - 1)
       summary_height = math.max(1, content_height - scrollable_height)
     end
+    local sidebar_content, sidebar_highlights =
+      sidebar_lines(issue, math.max(20, sidebar_width_with_margin - 1), config)
 
     -- Keymaps are set before rendering so Esc/q can close even if later steps fail.
     map_popup_keys(summary_buf, issue, config, nav_controls)
