@@ -26,6 +26,8 @@ popup.
   line context so you can jump straight into their details.
 - `<leader>ja` shows a quick table of unresolved issues assigned to you so
   you can jump straight into the one you care about.
+- `<leader>jc` shows unresolved issues created by you.
+- `<leader>jr` shows issues you recently viewed.
 - `<leader>js` opens a highlighted JQL prompt with inline help and
   server-backed suggestions, then displays the matching issues with paging
   controls and totals.
@@ -105,6 +107,20 @@ require("jira").setup({
     height = 0.5,
     max_results = 50,
   },
+  created_popup = {
+    keymap = "<leader>jc",
+    -- opens the created-by-me list popup
+    width = 0.55,
+    height = 0.5,
+    max_results = 50,
+  },
+  recent_popup = {
+    keymap = "<leader>jr",
+    -- opens the recently-viewed list popup
+    width = 0.55,
+    height = 0.5,
+    max_results = 50,
+  },
   search_popup = {
     keymap = "<leader>js",
     -- prompts for JQL and shows the result list
@@ -174,10 +190,11 @@ in `issue_history.json` and is deduplicated by key; set
 many lines in the current buffer are scanned for issue keys when you only want
 to underline the top of very large files. Customize `assigned_popup` to tweak
 the keybinding, size, or number of issues returned by the "assigned to me"
-list, `search_popup` for the JQL prompt/table layout, `filter_popup` for the
-filter prompt/table layout, `filter_list_popup` for the saved filters list, and
-`buffer_popup` to control the in-buffer picker (size, border, and whether it
-closes after selection). Issue tables show the total result count, the range
+list, `created_popup` for created-by-me lists, `recent_popup` for recently
+viewed lists, `search_popup` for the JQL prompt/table layout, `filter_popup` for
+the filter prompt/table layout, `filter_list_popup` for the saved filters list,
+and `buffer_popup` to control the in-buffer picker (size, border, and whether
+it closes after selection). Issue tables show the total result count, the range
 currently visible, and let you move between rows with `j`/`k` (or `<S-N>/<S-P>`),
 page with `<C-f>/<C-b>`, and hit `<CR>` to open the selected issue without
 dismissing the list.
@@ -227,13 +244,14 @@ require("lualine").setup({
 5. Press `<leader>jb` to list every issue key in the current buffer (with line
    numbers) and open one with `<CR>`; closing the issue popup returns you to
    the list. Press `<leader>ja` to see unresolved issues assigned to you,
-   `<leader>js` to enter a JQL query and page through the matches, `<leader>jf`
-   to enter a filter id and press `<CR>` to submit (errors stay in the prompt
-   so you can edit and resubmit), `<leader>jj` to browse your saved filters
-   (favorites first), or `<leader>jh` to reopen something you viewed recently
-   (history is deduped and persisted between sessions). Use `j`/`k` (or
-   `<S-N>/<S-P>`) to move through the list, `<CR>` to open an issue, `<C-f>/<C-b>`
-   to change pages, and `q`/`Esc` to close the popup(s).
+   `<leader>jc` for unresolved issues you created, `<leader>jr` for recently
+   viewed issues, `<leader>js` to enter a JQL query and page through the
+   matches, `<leader>jf` to enter a filter id and press `<CR>` to submit (errors
+   stay in the prompt so you can edit and resubmit), `<leader>jj` to browse your
+   saved filters (favorites first), or `<leader>jh` to reopen something you
+   viewed recently (history is deduped and persisted between sessions). Use
+   `j`/`k` (or `<S-N>/<S-P>`) to move through the list, `<CR>` to open an issue,
+   `<C-f>/<C-b>` to change pages, and `q`/`Esc` to close the popup(s).
 
 Inside the JQL prompt, `Esc` drops you into Normal mode so you can
 edit/yank/clear text with your usual motions. The left sidebar lists your

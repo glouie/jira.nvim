@@ -80,6 +80,20 @@ local default_config = {
     border = "rounded",
     max_results = 50,
   },
+  created_popup = {
+    keymap = "<leader>jc",
+    width = 0.55,
+    height = 0.5,
+    border = "rounded",
+    max_results = 50,
+  },
+  recent_popup = {
+    keymap = "<leader>jr",
+    width = 0.55,
+    height = 0.5,
+    border = "rounded",
+    max_results = 50,
+  },
   search_popup = {
     keymap = "<leader>js",
     width = 0.6,
@@ -1372,6 +1386,8 @@ function M.setup(opts)
   config.api = vim.tbl_deep_extend("force", deepcopy(default_config.api), opts.api or {})
   config.popup = vim.tbl_deep_extend("force", deepcopy(default_config.popup), opts.popup or {})
   config.assigned_popup = vim.tbl_deep_extend("force", deepcopy(default_config.assigned_popup), opts.assigned_popup or {})
+  config.created_popup = vim.tbl_deep_extend("force", deepcopy(default_config.created_popup), opts.created_popup or {})
+  config.recent_popup = vim.tbl_deep_extend("force", deepcopy(default_config.recent_popup), opts.recent_popup or {})
   config.search_popup = vim.tbl_deep_extend("force", deepcopy(default_config.search_popup), opts.search_popup or {})
   config.filter_popup = vim.tbl_deep_extend("force", deepcopy(default_config.filter_popup), opts.filter_popup or {})
   config.filter_list_popup = vim.tbl_deep_extend("force", deepcopy(default_config.filter_list_popup), opts.filter_list_popup or {})
@@ -1431,6 +1447,18 @@ function M.setup(opts)
     vim.keymap.set("n", filter_list_keymap, function()
       M.open_filter_list()
     end, { desc = "jira.nvim: list saved Jira filters" })
+  end
+  local created_keymap = config.created_popup and config.created_popup.keymap
+  if created_keymap and created_keymap ~= "" then
+    vim.keymap.set("n", created_keymap, function()
+      M.open_created_issues()
+    end, { desc = "jira.nvim: list issues created by me" })
+  end
+  local recent_keymap = config.recent_popup and config.recent_popup.keymap
+  if recent_keymap and recent_keymap ~= "" then
+    vim.keymap.set("n", recent_keymap, function()
+      M.open_recent_issues()
+    end, { desc = "jira.nvim: list recently viewed issues" })
   end
   local buffer_keymap = config.buffer_popup and config.buffer_popup.keymap
   if buffer_keymap and buffer_keymap ~= "" then
@@ -1669,6 +1697,61 @@ local function render_assigned_page(start_at)
   end)
 end
 
+---Render a JQL-backed issue list with pagination.
+---@param title string Popup title.
+---@param jql string JQL query.
+---@param layout table Popup layout config.
+---@param start_at number Starting index.
+---@return nil
+local function render_jql_list_page(title, jql, layout, start_at)
+  api.search_issues(config, {
+    jql = jql,
+    max_results = layout and layout.max_results,
+    start_at = start_at,
+  }, function(result, err)
+    vim.schedule(function()
+      if err then
+        vim.notify(string.format("jira.nvim: %s", err), vim.log.levels.ERROR)
+        return
+      end
+      result = result or {}
+      local issues = result.issues or {}
+      local page_size = math.max(1, tonumber(result.max_results) or (layout and layout.max_results) or 50)
+      local start_idx = math.max(0, tonumber(result.start_at) or start_at or 0)
+      local total = tonumber(result.total)
+      if not total or total <= 0 then
+        total = start_idx + #issues
+      end
+      local pagination = {
+        total = total,
+        start_at = start_idx,
+        page_size = page_size,
+      }
+      local has_prev = start_idx > 0
+      local has_next = (#issues == page_size) and ((not result.total) or (start_idx + #issues < result.total))
+      local handlers = {}
+      if has_next then
+        handlers.next_page = function()
+          render_jql_list_page(title, jql, layout, start_idx + page_size)
+        end
+      end
+      if has_prev then
+        handlers.prev_page = function()
+          render_jql_list_page(title, jql, layout, math.max(0, start_idx - page_size))
+        end
+      end
+      popup.render_issue_list(issues, config, {
+        title = title,
+        empty_message = "No issues matched this query.",
+        pagination = pagination,
+        pagination_handlers = handlers,
+        layout = layout,
+        on_select = open_issue_from_list,
+      })
+    end)
+  end)
+end
+
 ---Render a JQL search popup for the specified query and page options.
 ---@param jql string JQL query string.
 ---@param opts table|nil Pagination state and next page tokens.
@@ -1864,6 +1947,22 @@ end
 ---@return nil
 function M.open_assigned_issues()
   render_assigned_page(0)
+end
+
+---Open a popup showing unresolved issues created by the current user.
+---@return nil
+function M.open_created_issues()
+  local layout = config.created_popup or {}
+  local jql = "reporter = currentUser() AND resolution = Unresolved ORDER BY updated DESC"
+  render_jql_list_page("Created by Me", jql, layout, 0)
+end
+
+---Open a popup showing recently viewed issues for the current user.
+---@return nil
+function M.open_recent_issues()
+  local layout = config.recent_popup or {}
+  local jql = "issue in recentlyViewed() ORDER BY updated DESC"
+  render_jql_list_page("Recently Viewed", jql, layout, 0)
 end
 
 ---Open an interactive JQL prompt and render results in a popup.

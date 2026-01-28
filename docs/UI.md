@@ -13,12 +13,14 @@ The goal is to make UI changes predictable and reviewable:
 2. **Hover summary output** (command area / statusline / lualine)
 3. **Buffer issue picker** (`<leader>jb`) — issue keys detected in current buffer
 4. **Assigned-to-me list** (`<leader>ja`) — unresolved issues assigned to current user
-5. **JQL search prompt + results** (`<leader>js`) — prompt with history + server-backed suggestions and paged results
-6. **Filter search prompt + results** (`<leader>jf`) — prompt for filter id with history + results list with detail preview
-7. **Saved filters list** (`<leader>jj`) — list of saved filters (favorites first) with owner details
-8. **Viewed issue history** (`<leader>jh`) — persisted list of recently viewed issues
-9. Issue metrics popup (TBD)
-10. Filter metrics popup (TBD)
+5. **Created-by-me list** (`<leader>jc`) — unresolved issues reported by current user
+6. **Recently viewed list** (`<leader>jr`) — recently viewed issues for current user
+7. **JQL search prompt + results** (`<leader>js`) — prompt with history + server-backed suggestions and paged results
+8. **Filter search prompt + results** (`<leader>jf`) — prompt for filter id with history + results list with detail preview
+9. **Saved filters list** (`<leader>jj`) — list of saved filters (favorites first) with owner details
+10. **Viewed issue history** (`<leader>jh`) — persisted list of recently viewed issues
+11. Issue metrics popup (TBD)
+12. Filter metrics popup (TBD)
 
 ## Global UX principles
 
@@ -152,7 +154,35 @@ Mouse support (optional but nice):
 
 - If more than `max_results`, provide paging controls.
 
-### 5) JQL search prompt + results (`<leader>js`)
+### 5) Created-by-me list (`<leader>jc`)
+
+**Purpose**
+
+- Show unresolved issues reported by the current user.
+
+**Layout**
+
+- Table/list with columns sufficient to choose the right issue quickly (key, summary, status, priority, etc.).
+
+**Paging**
+
+- If more than `max_results`, provide paging controls.
+
+### 6) Recently viewed list (`<leader>jr`)
+
+**Purpose**
+
+- Show issues recently viewed by the current user.
+
+**Layout**
+
+- Table/list with columns sufficient to choose the right issue quickly (key, summary, status, priority, etc.).
+
+**Paging**
+
+- If more than `max_results`, provide paging controls.
+
+### 7) JQL search prompt + results (`<leader>js`)
 
 **Prompt UI**
 
@@ -179,7 +209,7 @@ Mouse support (optional but nice):
 - Show totals and the current visible range.
 - Provide paging (`<C-f>` / `<C-b>`).
 
-### 6) Filter search prompt + results (`<leader>jf`)
+### 8) Filter search prompt + results (`<leader>jf`)
 
 **Prompt UI**
 
@@ -201,7 +231,7 @@ Mouse support (optional but nice):
 - Opening an issue detail popup from the list returns you to the list on close.
 - When the filter id is invalid or not found, show the error in the prompt and keep it open for edits.
 
-### 7) Saved filters list (`<leader>jj`)
+### 9) Saved filters list (`<leader>jj`)
 
 **Purpose**
 
@@ -216,7 +246,7 @@ Mouse support (optional but nice):
 - Favorites appear first, followed by the remaining filters owned by the user.
 - Selecting a filter submits its id to the filter search flow.
 
-### 8) Viewed issue history (`<leader>jh`)
+### 10) Viewed issue history (`<leader>jh`)
 
 **Purpose**
 

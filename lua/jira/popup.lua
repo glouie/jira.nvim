@@ -1541,7 +1541,10 @@ local function activate_current_issue()
     return
   end
   local issue = list_state.issues[list_state.selection]
-  if not issue or not issue.key then
+  if not issue then
+    return
+  end
+  if not issue.key and not list_state.allow_select_without_key then
     return
   end
   local handler = list_state.on_select
@@ -3732,6 +3735,7 @@ function Popup.render_filter_list(filters, config, opts)
     pagination = opts.pagination,
     page_handlers = opts.pagination_handlers,
     close_on_select = opts.close_on_select == true,
+    allow_select_without_key = true,
     title = title,
     source = opts.source,
     search_active = false,
