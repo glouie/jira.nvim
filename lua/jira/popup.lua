@@ -2,6 +2,7 @@
 -- Responsible for building floating windows, highlights, and issue list/detail layouts.
 
 local utils = require("jira.utils")
+local api = require("jira.api")
 
 local Popup = {}
 
@@ -25,6 +26,11 @@ local shortcut_sections = {
       { keys = "Tab/S-Tab", description = "Switch panes", category = "nav" },
       { keys = "/", description = "Search within pane", category = "nav" },
       { keys = "n/N", description = "Repeat last search", category = "nav" },
+      { keys = "yk", description = "Copy issue key", category = "copy" },
+      { keys = "ys", description = "Copy summary", category = "copy" },
+      { keys = "yd", description = "Copy description", category = "copy" },
+      { keys = "yl", description = "Copy issue URL", category = "copy" },
+      { keys = "y (visual)", description = "Copy selection", category = "copy" },
       {
         keys = "<C-n>/<C-p>",
         description = "Next/previous issue",
@@ -50,6 +56,7 @@ local shortcut_sections = {
     entries = {
       { keys = "q/Esc", description = "Close popup", category = "exit" },
       { keys = "j/k/<Up>/<Down>/<S-N>/<S-P>", description = "Move selection", category = "nav" },
+      { keys = "gg/G", description = "Jump to top/bottom", category = "nav" },
       { keys = "<C-f>/<C-b>", description = "Next/previous page", category = "nav" },
       { keys = "<CR>", description = "Open selected issue", category = "open" },
       { keys = "?", description = "Open help popup", category = "help" },
@@ -58,7 +65,7 @@ local shortcut_sections = {
   jql = {
     title = "JQL search popup",
     entries = {
-      { keys = "q/<C-c>", description = "Cancel search", category = "exit" },
+      { keys = "q/Esc/<C-c><C-c>", description = "Cancel search", category = "exit" },
       { keys = "<C-n>/<C-p>", description = "History or completion down/up", category = "nav" },
       { keys = "<Tab>", description = "Toggle focus or cancel preview", category = "nav" },
       { keys = "<CR>", description = "Apply history selection or submit", category = "submit" },
@@ -991,7 +998,10 @@ local function open_url_under_cursor(buf, config, trigger)
   if issue_key and issue_key ~= "" then
     local issue_url = format_issue_url and format_issue_url(issue_key, config) or ""
     if issue_url == "" then
-      vim.notify("jira.nvim: Jira base URL is not configured; cannot open browser", vim.log.levels.WARN)
+      vim.notify(
+        "jira.nvim: Jira base URL is not configured; set config.api.base_url or $JIRA_BASE_URL",
+        vim.log.levels.WARN
+      )
       log_popup_event("OPEN_LINK_RESULT", {
         trigger = trigger or "unknown",
         buffer = buf,
@@ -1090,6 +1100,11 @@ local list_state = {
   preview_buf = nil,
   preview_source_buf = nil,
   preview_height = nil,
+  preview_mode = nil,
+  preview_cache = nil,
+  preview_request_key = nil,
+  preview_pending = false,
+  config = nil,
 }
 
 local help_state = {
@@ -1162,6 +1177,11 @@ local function close_issue_list()
     preview_buf = nil,
     preview_source_buf = nil,
     preview_height = nil,
+    preview_mode = nil,
+    preview_cache = nil,
+    preview_request_key = nil,
+    preview_pending = false,
+    config = nil,
   }
 end
 
@@ -1178,13 +1198,157 @@ local function center_preview_on_line(win, line)
   end)
 end
 
+---Build detail preview lines for a Jira issue.
+---@param issue table Jira issue payload.
+---@param width integer Available preview width.
+---@return string[] lines Rendered preview lines.
+---@return table highlights Highlight entries for the preview.
+local function issue_detail_preview_lines(issue, width)
+  local fields = issue.fields or {}
+  local summary = utils.trim(fields.summary or "")
+  if summary == "" then
+    summary = "(no summary)"
+  end
+  local title = string.format("%s - %s", issue.key or "Issue", summary)
+  local lines = { title }
+  local highlights = {}
+  highlight_full_line(highlights, "JiraPopupTitle", 0, title)
+
+  local divider = string.rep("-", math.max(10, width))
+  table.insert(lines, divider)
+  highlight_full_line(highlights, "JiraPopupSection", #lines - 1, divider)
+
+  local function user_name(user)
+    if vim and vim.NIL and user == vim.NIL then
+      return ""
+    end
+    if type(user) ~= "table" then
+      return utils.trim(user or "")
+    end
+    return utils.trim(user.displayName or user.name or user.emailAddress or "")
+  end
+
+  local function add_field(label, value)
+    value = utils.trim(value or "")
+    if value == "" then
+      value = "-"
+    end
+    local line = string.format("%s: %s", label, value)
+    table.insert(lines, line)
+    highlight_label_portion(highlights, #lines - 1, label)
+  end
+
+  local status = fields.status
+  local status_label = ""
+  if type(status) == "table" then
+    status_label = utils.trim(status.name or status.displayName or "")
+  else
+    status_label = utils.trim(status or "")
+  end
+  add_field("Status", status_label)
+
+  local priority = fields.priority
+  local priority_label = ""
+  if type(priority) == "table" then
+    priority_label = utils.trim(priority.name or priority.displayName or priority.value or "")
+  else
+    priority_label = utils.trim(priority or "")
+  end
+  add_field("Priority", priority_label)
+
+  add_field("Assignee", user_name(fields.assignee))
+  add_field("Reporter", user_name(fields.reporter))
+
+  table.insert(lines, "")
+  table.insert(lines, "Description")
+  highlight_full_line(highlights, "JiraPopupSection", #lines - 1, lines[#lines])
+  local desc_divider = string.rep("-", math.max(10, width))
+  table.insert(lines, desc_divider)
+  highlight_full_line(highlights, "JiraPopupDescription", #lines - 1, desc_divider)
+
+  local description = utils.requested_description(issue)
+  if description == "" then
+    description = "No description available."
+  end
+  for _, line in ipairs(utils.wrap_text(description, math.max(20, width))) do
+    table.insert(lines, line)
+    if line ~= "" then
+      highlight_full_line(highlights, "JiraPopupDescription", #lines - 1, line)
+    end
+  end
+  return lines, highlights
+end
+
+---Update the preview pane with Jira issue details.
+---@param issue table|nil Issue list entry containing key.
+---@return nil
+local function render_issue_detail_preview(issue)
+  local preview_buf = list_state.preview_buf
+  local preview_win = list_state.preview_win
+  if not preview_buf or not preview_win then
+    return
+  end
+  if not vim.api.nvim_buf_is_valid(preview_buf) or not vim.api.nvim_win_is_valid(preview_win) then
+    return
+  end
+  local width = vim.api.nvim_win_get_width(preview_win)
+  if not issue or not issue.key then
+    fill_buffer(preview_buf, { "Select an issue to view details." })
+    apply_highlights(preview_buf, { "Select an issue to view details." }, nil, list_state.config and list_state.config.issue_pattern, list_state.config and list_state.config._ignored_project_map)
+    return
+  end
+  local key = issue.key
+  list_state.preview_cache = list_state.preview_cache or {}
+  if list_state.preview_cache[key] then
+    local cached = list_state.preview_cache[key]
+    fill_buffer(preview_buf, cached.lines)
+    apply_highlights(preview_buf, cached.lines, cached.highlights, list_state.config and list_state.config.issue_pattern, list_state.config and list_state.config._ignored_project_map)
+    return
+  end
+  if list_state.preview_request_key == key and list_state.preview_pending then
+    return
+  end
+  list_state.preview_request_key = key
+  list_state.preview_pending = true
+  fill_buffer(preview_buf, { string.format("Loading %s...", key) })
+
+  api.fetch_issue(key, list_state.config or {}, function(full_issue, err)
+    vim.schedule(function()
+      if not list_state.preview_buf or not vim.api.nvim_buf_is_valid(list_state.preview_buf) then
+        return
+      end
+      if list_state.preview_request_key ~= key then
+        return
+      end
+      list_state.preview_pending = false
+      if err or not full_issue then
+        local message = err and tostring(err) or "Unable to load issue details."
+        fill_buffer(list_state.preview_buf, { message })
+        apply_highlights(list_state.preview_buf, { message }, nil, list_state.config and list_state.config.issue_pattern, list_state.config and list_state.config._ignored_project_map)
+        return
+      end
+      local lines, highlights = issue_detail_preview_lines(full_issue, width)
+      list_state.preview_cache[key] = { lines = lines, highlights = highlights }
+      fill_buffer(list_state.preview_buf, lines)
+      apply_highlights(list_state.preview_buf, lines, highlights, list_state.config and list_state.config.issue_pattern, list_state.config and list_state.config._ignored_project_map)
+    end)
+  end)
+end
+
 ---Update the preview pane to show context around the selected issue.
 ---@param issue table|nil Issue entry containing at least `line` and `key`.
 local function render_issue_list_preview(issue)
   local preview_buf = list_state.preview_buf
   local preview_win = list_state.preview_win
   local source_buf = list_state.preview_source_buf
-  if not preview_buf or not preview_win or not source_buf then
+  if not preview_buf or not preview_win then
+    return
+  end
+  if list_state.preview_mode == "issue" then
+    render_issue_detail_preview(issue)
+    return
+  end
+  if not source_buf then
     return
   end
   if not vim.api.nvim_buf_is_valid(preview_buf) or not vim.api.nvim_buf_is_valid(source_buf) or not vim.api.nvim_win_is_valid(preview_win) then
@@ -2873,10 +3037,60 @@ local function map_popup_keys(buf, issue, config, nav_controls)
   local function open_in_browser()
     local url = format_issue_url(issue.key, config)
     if url == "" then
-      vim.notify("jira.nvim: Jira base URL is not configured; cannot open browser", vim.log.levels.WARN)
+      vim.notify(
+        "jira.nvim: Jira base URL is not configured; set config.api.base_url or $JIRA_BASE_URL",
+        vim.log.levels.WARN
+      )
       return
     end
     utils.open_url(url)
+  end
+  ---Copy text to clipboard and unnamed register.
+  ---@param label string Description for notifications.
+  ---@param text string|nil Text to copy.
+  ---@return nil
+  local function copy_to_clipboard(label, text)
+    local value = utils.trim(text or "")
+    if value == "" then
+      vim.notify(string.format("jira.nvim: no %s to copy", label), vim.log.levels.INFO)
+      return
+    end
+    pcall(vim.fn.setreg, "+", value)
+    pcall(vim.fn.setreg, '"', value)
+    vim.notify(string.format("jira.nvim: copied %s to clipboard", label), vim.log.levels.INFO)
+  end
+  ---Copy the issue key.
+  ---@return nil
+  local function copy_issue_key()
+    copy_to_clipboard("issue key", issue.key)
+  end
+  ---Copy the issue summary.
+  ---@return nil
+  local function copy_issue_summary()
+    local fields = issue.fields or {}
+    copy_to_clipboard("summary", fields.summary or "")
+  end
+  ---Copy the issue description.
+  ---@return nil
+  local function copy_issue_description()
+    local description = utils.requested_description(issue)
+    if description == "" then
+      description = "No description available."
+    end
+    copy_to_clipboard("description", description)
+  end
+  ---Copy the issue URL.
+  ---@return nil
+  local function copy_issue_url()
+    local url = format_issue_url(issue.key, config)
+    if url == "" then
+      vim.notify(
+        "jira.nvim: Jira base URL is not configured; set config.api.base_url or $JIRA_BASE_URL",
+        vim.log.levels.WARN
+      )
+      return
+    end
+    copy_to_clipboard("URL", url)
   end
   ---Start a search prompt scoped to popup buffers.
   ---@return nil
@@ -2917,6 +3131,11 @@ local function map_popup_keys(buf, issue, config, nav_controls)
   vim.keymap.set("n", "q", close_popup, opts)
   vim.keymap.set("n", "<Esc>", close_popup, opts)
   vim.keymap.set("n", "o", open_in_browser, opts)
+  vim.keymap.set("n", "yk", copy_issue_key, opts)
+  vim.keymap.set("n", "ys", copy_issue_summary, opts)
+  vim.keymap.set("n", "yd", copy_issue_description, opts)
+  vim.keymap.set("n", "yl", copy_issue_url, opts)
+  vim.keymap.set("x", "y", '"+y', opts)
   vim.keymap.set("n", "<CR>", function()
     open_link_at_cursor("<CR>")
   end, opts)
@@ -3032,13 +3251,14 @@ function Popup.render_issue_list(issues, config, opts)
   local border = layout_cfg.border or (config.popup and config.popup.border) or "rounded"
   local title = opts.title or layout_cfg.title or "Assigned Issues"
   local preview_source_buf = opts.preview_bufnr or (opts.preview and opts.preview.bufnr) or nil
+  local preview_mode = opts.preview and opts.preview.mode or nil
   if preview_source_buf and not vim.api.nvim_buf_is_valid(preview_source_buf) then
     preview_source_buf = nil
   end
 
   local list_width = dims.width
   local preview_width
-  if preview_source_buf then
+  if preview_source_buf or preview_mode == "issue" then
     list_width = math.max(20, math.floor(dims.width * 0.45))
     preview_width = dims.width - list_width
     if preview_width < 20 then
@@ -3158,16 +3378,25 @@ function Popup.render_issue_list(issues, config, opts)
     preview_buf = nil,
     preview_source_buf = preview_source_buf,
     preview_height = content_height,
+    preview_mode = preview_mode,
+    preview_cache = {},
+    preview_request_key = nil,
+    preview_pending = false,
+    config = config,
   }
 
-  if preview_source_buf then
+  if preview_source_buf or preview_mode == "issue" then
     local preview_buf = vim.api.nvim_create_buf(false, true)
     vim.bo[preview_buf].bufhidden = "wipe"
     vim.bo[preview_buf].swapfile = false
     vim.bo[preview_buf].buftype = "nofile"
-    local source_filetype = vim.bo[preview_source_buf].filetype
-    if source_filetype and source_filetype ~= "" then
-      vim.bo[preview_buf].filetype = source_filetype
+    if preview_source_buf then
+      local source_filetype = vim.bo[preview_source_buf].filetype
+      if source_filetype and source_filetype ~= "" then
+        vim.bo[preview_buf].filetype = source_filetype
+      else
+        vim.bo[preview_buf].filetype = "jira_popup_preview"
+      end
     else
       vim.bo[preview_buf].filetype = "jira_popup_preview"
     end
@@ -3182,8 +3411,12 @@ function Popup.render_issue_list(issues, config, opts)
       border = "none",
       focusable = false,
     })
-    vim.api.nvim_win_set_option(preview_win, "wrap", false)
-    vim.api.nvim_buf_set_lines(preview_buf, 0, -1, false, { "Select an issue to view context." })
+    vim.api.nvim_win_set_option(preview_win, "wrap", true)
+    if preview_mode == "issue" then
+      vim.api.nvim_buf_set_lines(preview_buf, 0, -1, false, { "Select an issue to view details." })
+    else
+      vim.api.nvim_buf_set_lines(preview_buf, 0, -1, false, { "Select an issue to view context." })
+    end
     vim.bo[preview_buf].modifiable = false
 
     list_state.preview_win = preview_win
@@ -3265,6 +3498,18 @@ function Popup.render_issue_list(issues, config, opts)
   end, key_opts)
   vim.keymap.set("n", "<S-P>", function()
     move_issue_list_selection(-1)
+  end, key_opts)
+  vim.keymap.set("n", "gg", function()
+    if list_state.issues and #list_state.issues > 0 then
+      list_state.selection = 1
+      refresh_issue_list_selection()
+    end
+  end, key_opts)
+  vim.keymap.set("n", "G", function()
+    if list_state.issues and #list_state.issues > 0 then
+      list_state.selection = #list_state.issues
+      refresh_issue_list_selection()
+    end
   end, key_opts)
   vim.keymap.set("n", "<C-f>", function()
     goto_issue_list_page(1)

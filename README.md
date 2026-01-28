@@ -29,6 +29,8 @@ popup.
 - `<leader>js` opens a highlighted JQL prompt with inline help and
   server-backed suggestions, then displays the matching issues with paging
   controls and totals.
+- `<leader>jf` opens a filter-id prompt, loads the filter's JQL, and shows
+  matching issues with a live details preview pane.
 - `<leader>jh` opens a persisted list of issues you've viewed, deduped and
   ready to reopen with `<CR>`.
 - Uses your Atlassian Cloud API token, sourced from environment variables,
@@ -110,6 +112,15 @@ require("jira").setup({
     history_size = 50,
     -- how many past searches to show in the prompt sidebar
   },
+  filter_popup = {
+    keymap = "<leader>jf",
+    -- prompts for a Jira filter id and shows the result list
+    width = 0.6,
+    height = 0.6,
+    max_results = 50,
+    history_size = 50,
+    -- how many past filters to show in the prompt sidebar
+  },
   history_popup = {
     keymap = "<leader>jh",
     -- opens the recently-viewed issues table
@@ -146,18 +157,20 @@ Set `ignored_projects` to a list of project prefixes (defaults to `{ "SEV" }`)
 when you need to avoid false positives such as severity labels that resemble
 issue keys. JQL search history is stored at
 `stdpath("data")/jira.nvim/search_history.json` and respects `history_size`
-(set it to `0` to skip saving and showing history). Viewed issue history lives
-beside it in `issue_history.json` and is deduplicated by key; set
+(set it to `0` to skip saving and showing history). Filter history lives beside
+it in `filter_history.json` and stores the filter id + name (set
+`filter_popup.history_size` to `0` to disable it). Viewed issue history lives
+in `issue_history.json` and is deduplicated by key; set
 `history_popup.history_size` to `0` to disable it. Use `max_lines` to cap how
 many lines in the current buffer are scanned for issue keys when you only want
 to underline the top of very large files. Customize `assigned_popup` to tweak
 the keybinding, size, or number of issues returned by the "assigned to me"
-list, `search_popup` for the JQL prompt/table layout, and `buffer_popup` to
-control the in-buffer picker (size, border, and whether it closes after
-selection). Issue tables show the total result count, the range currently
-visible, and let you move between rows with `j`/`k` (or `<S-N>/<S-P>`), page
-with `<C-f>/<C-b>`, and hit `<CR>` to open the selected issue without
-dismissing the list.
+list, `search_popup` for the JQL prompt/table layout, `filter_popup` for the
+filter prompt/table layout, and `buffer_popup` to control the in-buffer picker
+(size, border, and whether it closes after selection). Issue tables show the
+total result count, the range currently visible, and let you move between rows
+with `j`/`k` (or `<S-N>/<S-P>`), page with `<C-f>/<C-b>`, and hit `<CR>` to open
+the selected issue without dismissing the list.
 
 The Details sidebar rows follow `popup.details_fields`, which accepts a list to
 set both the fields and their order (defaults keep labels at the bottom). Use it
@@ -204,11 +217,13 @@ require("lualine").setup({
 5. Press `<leader>jb` to list every issue key in the current buffer (with line
    numbers) and open one with `<CR>`. Press `<leader>ja` to see unresolved
    issues assigned to you, `<leader>js` to enter a JQL query and page through
-   the matches, or `<leader>jh` to reopen something you viewed recently
-   (history is deduped and persisted between sessions). Use `j`/`k` (or
-   `<S-N>/<S-P>`) to move through the list, `<CR>` to open an issue (the buffer
-   picker closes by default; other lists stay open so you can come right back),
-   `<C-f>/<C-b>` to change pages, and `q`/`Esc` to close the popup(s).
+   the matches, `<leader>jf` to enter a filter id and page through its issues
+   (with a live details preview pane), or `<leader>jh` to reopen something you
+   viewed recently (history is deduped and persisted between sessions). Use
+   `j`/`k` (or `<S-N>/<S-P>`) to move through the list, `<CR>` to open an issue
+   (the buffer picker closes by default; other lists stay open so you can come
+   right back), `<C-f>/<C-b>` to change pages, and `q`/`Esc` to close the
+   popup(s).
 
 Inside the JQL prompt, `Esc` drops you into Normal mode so you can
 edit/yank/clear text with your usual motions. The left sidebar lists your

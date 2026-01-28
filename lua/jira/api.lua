@@ -898,6 +898,67 @@ function M.search_issues(config, params, callback)
   end)
 end
 
+---Fetch a Jira filter by numeric id.
+---@param filter_id string|number Filter identifier.
+---@param config table Plugin configuration containing API credentials and base URL.
+---@param callback fun(filter:table|nil, err:string|nil) Invoked with filter metadata or error.
+---@return nil
+function M.fetch_filter(filter_id, config, callback)
+  local id = utils.trim(filter_id and tostring(filter_id) or "")
+  if id == "" then
+    callback(nil, "A filter id is required.")
+    return
+  end
+  local api_config = config.api or {}
+  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
+  if base_url == "" then
+    callback(
+      nil,
+      "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable."
+    )
+    return
+  end
+  local auth, auth_err = utils.encode_basic_auth(
+    api_config.email or vim.env.JIRA_API_EMAIL,
+    api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY
+  )
+  if not auth then
+    callback(
+      nil,
+      string.format(
+        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
+        auth_err
+      )
+    )
+    return
+  end
+
+  local endpoint = string.format("%s/rest/api/3/filter/%s", base_url, utils.url_encode(id))
+  run_command(build_get_args(endpoint, auth), function(body, err)
+    if err then
+      callback(
+        nil,
+        humanize_remote_error(
+          err,
+          string.format("filter %s", id),
+          { base_url = base_url, subject_label = string.format("filter %s", id) }
+        )
+      )
+      return
+    end
+    local ok, data = pcall(utils.json_decode, body)
+    if not ok or type(data) ~= "table" then
+      callback(nil, string.format("Jira returned a response that could not be parsed while loading filter %s.", id))
+      return
+    end
+    callback({
+      id = data.id or id,
+      name = utils.trim(data.name or ""),
+      jql = utils.trim(data.jql or ""),
+    }, nil)
+  end)
+end
+
 ---Normalize mixed autocomplete values into a list of strings.
 ---@param list table|string[]|nil Raw list from Jira autocomplete endpoints.
 ---@return string[] normalized Flattened string values.

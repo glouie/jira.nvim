@@ -833,8 +833,10 @@ local function attach_listeners(state, on_submit, on_change, help_text)
       if on_change then
         on_change(buffer_text(state.buf))
       end
-      maybe_suggest_field_values(state, cursor_line)
-      maybe_suggest_fields(state, cursor_line)
+      if state.autocomplete_enabled then
+        maybe_suggest_field_values(state, cursor_line)
+        maybe_suggest_fields(state, cursor_line)
+      end
     end,
   })
   vim.api.nvim_create_autocmd("BufLeave", {
@@ -1063,8 +1065,20 @@ local function attach_listeners(state, on_submit, on_change, help_text)
     with_desc(key_opts, "jira.nvim: close JQL prompt")
   )
   vim.keymap.set(
+    { "i", "n" },
+    "<C-c><C-c>",
+    close_current_prompt,
+    with_desc(key_opts, "jira.nvim: close JQL prompt")
+  )
+  vim.keymap.set(
     "n",
     "q",
+    close_current_prompt,
+    with_desc(key_opts, "jira.nvim: close JQL prompt")
+  )
+  vim.keymap.set(
+    "n",
+    "<Esc>",
     close_current_prompt,
     with_desc(key_opts, "jira.nvim: close JQL prompt")
   )
@@ -1114,8 +1128,20 @@ local function attach_listeners(state, on_submit, on_change, help_text)
       with_desc(history_key_opts, "jira.nvim: close JQL prompt")
     )
     vim.keymap.set(
+      { "i", "n" },
+      "<C-c><C-c>",
+      close_current_prompt,
+      with_desc(history_key_opts, "jira.nvim: close JQL prompt")
+    )
+    vim.keymap.set(
       "n",
       "q",
+      close_current_prompt,
+      with_desc(history_key_opts, "jira.nvim: close JQL prompt")
+    )
+    vim.keymap.set(
+      "n",
+      "<Esc>",
       close_current_prompt,
       with_desc(history_key_opts, "jira.nvim: close JQL prompt")
     )
@@ -1132,6 +1158,9 @@ end
 ---@param state table Prompt state.
 ---@return nil
 local function fetch_autocomplete(state)
+  if not state.autocomplete_enabled then
+    return
+  end
   api.fetch_jql_autocomplete(state.config, function(data, err)
     vim.schedule(function()
       if err then
@@ -1160,6 +1189,7 @@ function JQLPrompt.open(opts)
   local on_change = opts.on_change
   local on_close = opts.on_close
   local config = opts.config or {}
+  local autocomplete_enabled = opts.autocomplete ~= false
   local history_entries = {}
   if type(opts.history) == "table" then
     for _, entry in ipairs(opts.history) do
@@ -1316,6 +1346,7 @@ function JQLPrompt.open(opts)
     buf = buf,
     win = win,
     autocomplete = nil,
+    autocomplete_enabled = autocomplete_enabled,
     cache = {},
     config = config,
     suggestion_timer = nil,

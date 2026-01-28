@@ -88,6 +88,14 @@ local default_config = {
     max_results = 50,
     history_size = 50,
   },
+  filter_popup = {
+    keymap = "<leader>jf",
+    width = 0.6,
+    height = 0.6,
+    border = "rounded",
+    max_results = 50,
+    history_size = 50,
+  },
   history_popup = {
     keymap = "<leader>jh",
     width = 0.55,
@@ -139,8 +147,10 @@ local group = vim.api.nvim_create_augroup("jira.nvim", { clear = true })
 local navigation_state
 local move_navigation
 local last_jql_query
+local last_filter_query
 local search_history = {}
 local issue_history = {}
+local filter_history = {}
 local debug_state = {
   hover_issue = nil,
 }
@@ -196,6 +206,16 @@ local function issue_history_store_path()
   return join_path(data_dir, "jira.nvim", "issue_history.json")
 end
 
+---Resolve the on-disk path used to store filter history.
+---@return string|nil path Absolute file path or nil when stdpath is unavailable.
+local function filter_history_store_path()
+  local ok, data_dir = pcall(vim.fn.stdpath, "data")
+  if not ok or not data_dir or data_dir == "" then
+    return nil
+  end
+  return join_path(data_dir, "jira.nvim", "filter_history.json")
+end
+
 ---Return the configured history size limit for the JQL prompt.
 ---@return integer limit Maximum number of entries to keep.
 local function history_limit()
@@ -216,6 +236,21 @@ end
 local function issue_history_limit()
   local limit = default_config.history_popup.history_size or 0
   local configured = config.history_popup and config.history_popup.history_size
+  if configured ~= nil then
+    limit = configured
+  end
+  limit = tonumber(limit) or 0
+  if limit < 0 then
+    limit = 0
+  end
+  return math.floor(limit)
+end
+
+---Return the configured history size limit for filters.
+---@return integer limit Maximum number of entries to keep.
+local function filter_history_limit()
+  local limit = default_config.filter_popup.history_size or 0
+  local configured = config.filter_popup and config.filter_popup.history_size
   if configured ~= nil then
     limit = configured
   end
@@ -280,6 +315,33 @@ local function save_issue_history()
   file:close()
 end
 
+---Persist the current filter history to disk.
+---@return nil
+local function save_filter_history()
+  local limit = filter_history_limit()
+  if limit <= 0 then
+    return
+  end
+  local path = filter_history_store_path()
+  if not path then
+    return
+  end
+  local dir = path:match("^(.*)/[^/]+$")
+  if dir and dir ~= "" then
+    pcall(vim.fn.mkdir, dir, "p")
+  end
+  local ok_encode, payload = pcall(utils.json_encode, filter_history)
+  if not ok_encode or not payload then
+    return
+  end
+  local file = io.open(path, "w")
+  if not file then
+    return
+  end
+  file:write(payload)
+  file:close()
+end
+
 ---Trim stored JQL history to the configured limit.
 ---@param opts table|nil Additional options.
 ---@return nil
@@ -320,6 +382,26 @@ local function trim_issue_history(opts)
   end
 end
 
+---Trim stored filter history to the configured limit.
+---@param opts table|nil Additional options.
+---@return nil
+local function trim_filter_history(opts)
+  local limit = filter_history_limit()
+  if limit <= 0 then
+    filter_history = {}
+    if opts and opts.persist then
+      save_filter_history()
+    end
+    return
+  end
+  while #filter_history > limit do
+    table.remove(filter_history, 1)
+  end
+  if opts and opts.persist then
+    save_filter_history()
+  end
+end
+
 ---Insert a search history entry, ensuring the most recent copy is kept.
 ---@param value string Cleaned JQL string.
 ---@return nil
@@ -349,6 +431,23 @@ local function push_issue_history(entry)
   end
   entry.summary = utils.trim(entry.summary or "")
   table.insert(issue_history, entry)
+end
+
+---Insert a filter history entry, ensuring the most recent copy is kept.
+---@param entry table Filter data containing `id` and `name`.
+---@return nil
+local function push_filter_history(entry)
+  if not entry or not entry.id or entry.id == "" then
+    return
+  end
+  local id = tostring(entry.id)
+  local name = utils.trim(entry.name or "")
+  for idx = #filter_history, 1, -1 do
+    if filter_history[idx] and tostring(filter_history[idx].id) == id then
+      table.remove(filter_history, idx)
+    end
+  end
+  table.insert(filter_history, { id = id, name = name })
 end
 
 ---Load saved JQL history from disk.
@@ -417,6 +516,43 @@ local function load_issue_history()
   trim_issue_history({ persist = true })
 end
 
+---Load saved filter history from disk.
+---@return nil
+local function load_filter_history()
+  filter_history = {}
+  local path = filter_history_store_path()
+  if not path then
+    return
+  end
+  local file = io.open(path, "r")
+  if not file then
+    return
+  end
+  local ok_read, contents = pcall(file.read, file, "*a")
+  file:close()
+  if not ok_read or not contents or contents == "" then
+    return
+  end
+  local decoded = utils.json_decode(contents)
+  if type(decoded) ~= "table" then
+    return
+  end
+  for _, entry in ipairs(decoded) do
+    if type(entry) == "table" and entry.id then
+      push_filter_history({
+        id = tostring(entry.id),
+        name = utils.trim(entry.name or ""),
+      })
+    elseif type(entry) == "string" then
+      local cleaned = utils.trim(entry)
+      if cleaned ~= "" then
+        push_filter_history({ id = cleaned, name = "" })
+      end
+    end
+  end
+  trim_filter_history({ persist = true })
+end
+
 ---Record a submitted JQL query in the history ring.
 ---@param query string|nil JQL text to store.
 ---@return nil
@@ -446,6 +582,17 @@ local function record_issue_history(issue)
     summary = summary,
   })
   trim_issue_history({ persist = true })
+end
+
+---Record a filter selection in history.
+---@param filter table|nil Filter payload containing `id` and `name`.
+---@return nil
+local function record_filter_history(filter)
+  if not filter or not filter.id then
+    return
+  end
+  push_filter_history({ id = tostring(filter.id), name = utils.trim(filter.name or "") })
+  trim_filter_history({ persist = true })
 end
 
 ---Rebuild a lookup map for ignored project keys from config.
@@ -499,6 +646,8 @@ local statusline_state = {
   original = nil,
   template = nil,
 }
+local hover_debounce_timer = nil
+local hover_debounce_ms = 120
 
 ---Build the jira.nvim-owned statusline layout string.
 ---@return string template Statusline format string.
@@ -698,41 +847,22 @@ local function format_statusline_text(issue_key, summary)
   if not issue_key or issue_key == "" then
     return ""
   end
-  local details = {}
+  local summary_text = ""
   if type(summary) == "table" then
-    details = summary
-  elseif summary ~= nil then
-    details.summary = summary
+    summary_text = utils.trim(summary.summary or "")
+  else
+    summary_text = utils.trim(summary or "")
   end
-
-  local status = utils.trim(details.status or "")
-  local resolution = utils.trim(details.resolution or "")
-  local assignee = utils.trim(details.assignee or "")
-  local reporter = utils.trim(details.reporter or "")
-
-  local status_label = status ~= "" and status or "Unknown"
-  local resolution_label = resolution ~= "" and resolution or "Unresolved"
-  local assignee_label = assignee ~= "" and assignee or "Unassigned"
-  local reporter_label = reporter ~= "" and reporter or "Unknown"
-
-  local prefix = string.format("JIRA: [%s] ", issue_key)
-  local suffix = string.format(" [%s][%s] assignee: %s reporter: %s", status_label, resolution_label, assignee_label, reporter_label)
-
-  local reserved_width = vim.api.nvim_strwidth(prefix .. suffix)
-
-  local clean_summary = utils.trim(details.summary or "")
-  if clean_summary == "" then
-    clean_summary = utils.trim(statusline_config_value("empty_text") or "")
+  if summary_text == "" then
+    summary_text = utils.trim(statusline_config_value("empty_text") or "")
   end
-
-  clean_summary = format_statusline_summary(clean_summary, statusline_summary_limit(reserved_width))
-
-  return string.format(
-    "%s%s%s",
-    prefix,
-    clean_summary,
-    suffix
-  )
+  if summary_text == "" then
+    return issue_key
+  end
+  local prefix = string.format("%s: ", issue_key)
+  local reserved_width = vim.api.nvim_strwidth(prefix)
+  summary_text = format_statusline_summary(summary_text, statusline_summary_limit(reserved_width))
+  return string.format("%s%s", prefix, summary_text)
 end
 
 ---Update the active statusline message and refresh the UI when needed.
@@ -844,7 +974,7 @@ local function update_hover_statusline(opts)
   end
 
   if not opts.fetch then
-    set_statusline_message(issue_key)
+    set_statusline_message(format_statusline_text(issue_key, statusline_config_value("loading_text") or ""))
     return
   end
 
@@ -862,10 +992,6 @@ local function update_hover_statusline(opts)
       end
       statusline_state.cache[issue_key] = {
         summary = utils.trim(issue and issue.summary or ""),
-        status = issue and issue.status or "",
-        resolution = issue and issue.resolution or "",
-        assignee = issue and issue.assignee or "",
-        reporter = issue and issue.reporter or "",
         _complete = true,
       }
       if statusline_state.current_key == issue_key then
@@ -873,6 +999,26 @@ local function update_hover_statusline(opts)
       end
     end)
   end)
+end
+
+---Schedule a debounced hover statusline update.
+---@return nil
+local function schedule_hover_update()
+  if not statusline_updates_enabled() then
+    return
+  end
+  if hover_debounce_timer then
+    hover_debounce_timer:stop()
+  else
+    hover_debounce_timer = vim.loop.new_timer()
+  end
+  hover_debounce_timer:start(
+    hover_debounce_ms,
+    0,
+    vim.schedule_wrap(function()
+      update_hover_statusline()
+    end)
+  )
 end
 
 ---Collect all Jira issue keys present in a buffer.
@@ -927,6 +1073,9 @@ local function buffer_issue_summary(issue)
     preview = utils.trim(preview:gsub("%s+", " "))
   end
   if preview ~= "" then
+    if issue.line then
+      return string.format("L%d: %s", issue.line, preview)
+    end
     return preview
   end
   if issue.line and issue.col then
@@ -1172,7 +1321,7 @@ local function attach_autocmds()
     vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
       group = group,
       callback = function()
-        update_hover_statusline()
+        schedule_hover_update()
       end,
     })
     vim.api.nvim_create_autocmd({ "CursorHold", "CursorHoldI" }, {
@@ -1217,6 +1366,7 @@ function M.setup(opts)
   config.popup = vim.tbl_deep_extend("force", deepcopy(default_config.popup), opts.popup or {})
   config.assigned_popup = vim.tbl_deep_extend("force", deepcopy(default_config.assigned_popup), opts.assigned_popup or {})
   config.search_popup = vim.tbl_deep_extend("force", deepcopy(default_config.search_popup), opts.search_popup or {})
+  config.filter_popup = vim.tbl_deep_extend("force", deepcopy(default_config.filter_popup), opts.filter_popup or {})
   config.history_popup = vim.tbl_deep_extend("force", deepcopy(default_config.history_popup), opts.history_popup or {})
   config.buffer_popup = vim.tbl_deep_extend("force", deepcopy(default_config.buffer_popup), opts.buffer_popup or {})
   config.statusline = vim.tbl_deep_extend("force", deepcopy(default_config.statusline), statusline_opts or {})
@@ -1232,11 +1382,16 @@ function M.setup(opts)
   statusline_state.message = ""
   statusline_state.applied = statusline_template_enabled() and statusline_state.applied or false
   statusline_state.template = statusline_template_enabled() and statusline_state.template or nil
+  if hover_debounce_timer then
+    hover_debounce_timer:stop()
+  end
   debug_state.hover_issue = nil
   load_search_history()
   load_issue_history()
+  load_filter_history()
   trim_search_history({ persist = true })
   trim_issue_history({ persist = true })
+  trim_filter_history({ persist = true })
   rebuild_ignored_project_map()
   ensure_highlight()
   attach_autocmds()
@@ -1256,6 +1411,12 @@ function M.setup(opts)
     vim.keymap.set("n", search_keymap, function()
       M.open_jql_search()
     end, { desc = "jira.nvim: search Jira via JQL" })
+  end
+  local filter_keymap = config.filter_popup and config.filter_popup.keymap
+  if filter_keymap and filter_keymap ~= "" then
+    vim.keymap.set("n", filter_keymap, function()
+      M.open_filter_search()
+    end, { desc = "jira.nvim: search Jira via filter" })
   end
   local buffer_keymap = config.buffer_popup and config.buffer_popup.keymap
   if buffer_keymap and buffer_keymap ~= "" then
@@ -1386,7 +1547,11 @@ function M.open_buffer_issue_list()
       local summary = summary_map and summary_map[entry.key]
       local final_summary = entry.summary
       if summary and summary ~= "" then
-        final_summary = summary
+        if final_summary and final_summary ~= "" then
+          final_summary = string.format("%s - %s", summary, final_summary)
+        else
+          final_summary = summary
+        end
       end
       table.insert(enriched, {
         key = entry.key,
@@ -1554,6 +1719,83 @@ local function render_jql_page(jql, opts)
   end)
 end
 
+---Parse a filter id from user input.
+---@param input string|nil Raw input text.
+---@return string|nil id Parsed filter id.
+local function parse_filter_id(input)
+  local raw = utils.trim(input or "")
+  if raw == "" then
+    return nil
+  end
+  local id = raw:match("(%d+)")
+  if not id or id == "" then
+    return nil
+  end
+  return id
+end
+
+---Render a filter-backed issue list for the given filter and start offset.
+---@param filter table Filter metadata including id, name, jql.
+---@param start_at number Starting index for pagination.
+---@return nil
+local function render_filter_page(filter, start_at)
+  api.search_issues(config, {
+    jql = filter.jql,
+    max_results = config.filter_popup and config.filter_popup.max_results,
+    start_at = start_at,
+  }, function(result, err)
+    vim.schedule(function()
+      if err then
+        vim.notify(string.format("jira.nvim: %s", err), vim.log.levels.ERROR)
+        return
+      end
+      result = result or {}
+      local issues = result.issues or {}
+      local page_size = math.max(1, tonumber(result.max_results) or (config.filter_popup and config.filter_popup.max_results) or 50)
+      local start_idx = math.max(0, tonumber(result.start_at) or start_at or 0)
+      local total = tonumber(result.total)
+      if not total or total <= 0 then
+        total = start_idx + #issues
+      end
+      local pagination = {
+        total = total,
+        start_at = start_idx,
+        page_size = page_size,
+      }
+      local has_prev = start_idx > 0
+      local has_next = (#issues == page_size) and ((not result.total) or (start_idx + #issues < result.total))
+      local handlers = {}
+      if has_next then
+        handlers.next_page = function()
+          render_filter_page(filter, start_idx + page_size)
+        end
+      end
+      if has_prev then
+        handlers.prev_page = function()
+          render_filter_page(filter, math.max(0, start_idx - page_size))
+        end
+      end
+      local title = "Filter"
+      if filter.name and filter.name ~= "" then
+        title = string.format("Filter: %s", filter.name)
+      elseif filter.id then
+        title = string.format("Filter %s", filter.id)
+      end
+      popup.render_issue_list(issues, config, {
+        title = title,
+        subtitle = filter.id and string.format("Filter ID: %s", filter.id) or nil,
+        empty_message = "No issues matched this filter.",
+        pagination = pagination,
+        pagination_handlers = handlers,
+        layout = config.filter_popup,
+        on_select = open_issue_from_list,
+        preview = { mode = "issue" },
+        source = "filter",
+      })
+    end)
+  end)
+end
+
 ---Open a popup showing unresolved issues assigned to the current user.
 ---@return nil
 function M.open_assigned_issues()
@@ -1597,6 +1839,78 @@ function M.open_jql_search()
       vim.ui.input({ prompt = "JQL query: ", default = default_query }, submit)
     else
       local ok_input, value = pcall(vim.fn.input, "JQL query: ", default_query)
+      if ok_input then
+        submit(value)
+      end
+    end
+  end
+end
+
+---Open a filter search prompt and list issues for the selected filter.
+---@return nil
+function M.open_filter_search()
+  local default_value = last_filter_query or ""
+  local help = "Enter Jira filter ID (number). Example: 12345"
+  local history_entries = {}
+  for _, entry in ipairs(filter_history) do
+    if entry and entry.id then
+      local label = tostring(entry.id)
+      if entry.name and entry.name ~= "" then
+        label = string.format("%s - %s", label, entry.name)
+      end
+      table.insert(history_entries, label)
+    end
+  end
+  local function submit(input)
+    local raw = utils.trim(input or "")
+    if raw == "" then
+      return
+    end
+    last_filter_query = raw
+    local id = parse_filter_id(raw)
+    if not id then
+      vim.notify("jira.nvim: please enter a numeric filter id", vim.log.levels.WARN)
+      return
+    end
+    api.fetch_filter(id, config, function(filter, err)
+      vim.schedule(function()
+        if err then
+          vim.notify(string.format("jira.nvim: %s", err), vim.log.levels.ERROR)
+          return
+        end
+        filter = filter or { id = id, name = "", jql = "" }
+        if filter.jql == "" then
+          vim.notify("jira.nvim: filter returned no JQL", vim.log.levels.WARN)
+          return
+        end
+        record_filter_history(filter)
+        render_filter_page(filter, 0)
+      end)
+    end)
+  end
+  local ok = jql_prompt.open({
+    default = default_value,
+    help = help,
+    config = config,
+    history = history_entries,
+    on_submit = submit,
+    on_change = function(value)
+      if value ~= nil then
+        last_filter_query = value
+      end
+    end,
+    on_close = function(value)
+      if value ~= nil then
+        last_filter_query = value
+      end
+    end,
+    autocomplete = false,
+  })
+  if not ok then
+    if vim.ui and vim.ui.input then
+      vim.ui.input({ prompt = "Filter ID: ", default = default_value }, submit)
+    else
+      local ok_input, value = pcall(vim.fn.input, "Filter ID: ", default_value)
       if ok_input then
         submit(value)
       end
