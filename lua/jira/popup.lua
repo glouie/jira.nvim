@@ -170,7 +170,19 @@ local function resolve_shortcut_section(section_key, opts)
     if entry.when and not entry.when(opts) then
       goto continue
     end
-    table.insert(resolved.entries, entry)
+    local resolved_entry = {
+      keys = entry.keys,
+      description = entry.description,
+      category = entry.category,
+      when = entry.when,
+    }
+    if resolved_entry.category == "exit" and resolved_entry.keys == "q/Esc" and opts and opts.return_hint then
+      local hint = utils.trim(opts.return_hint)
+      if hint ~= "" then
+        resolved_entry.description = string.format("Close (back to %s)", hint)
+      end
+    end
+    table.insert(resolved.entries, resolved_entry)
     ::continue::
   end
   return resolved
@@ -1073,6 +1085,7 @@ local state = {
   last_focus = nil,
   navigation = nil,
   return_focus = nil,
+  return_hint = nil,
   search = nil,
   dimensions = nil,
 }
@@ -1924,6 +1937,7 @@ function Popup.close()
     last_focus = nil,
     navigation = nil,
     return_focus = nil,
+    return_hint = nil,
     search = nil,
     dimensions = nil,
   }
@@ -3570,6 +3584,7 @@ function Popup.render(issue, config, context)
     local nav_context = context.navigation
     state.navigation = nav_context
     state.return_focus = context.return_focus
+    state.return_hint = context.return_hint
     local nav_controls = nil
     if nav_context then
       nav_controls = {
@@ -3648,7 +3663,10 @@ function Popup.render(issue, config, context)
 
     local main_content, main_highlights = main_lines(issue, math.max(20, main_width_with_margin - 1), config)
     local url_content, url_highlights = url_bar_lines(issue, config, url_width)
-    local help_content, help_highlights = help_bar_lines(url_width, { navigation = nav_context })
+    local help_content, help_highlights = help_bar_lines(url_width, {
+      navigation = nav_context,
+      return_hint = context.return_hint,
+    })
     local summary_lines, summary_highlights = summary_bar_lines(issue, summary_width)
     local url_bar_height = math.max(1, #url_content)
     local help_bar_height = math.max(1, #help_content)

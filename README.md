@@ -135,8 +135,8 @@ require("jira").setup({
     width = 0.55,
     height = 0.5,
     border = "rounded",
-    close_on_select = true,
-    -- close the picker after opening an issue from it
+    close_on_select = false,
+    -- keep the picker open so closing an issue returns to it
   },
   popup = {
     width = 0.6,
@@ -215,15 +215,14 @@ require("lualine").setup({
    place the cursor on any URL and press `<CR>` or Cmd+click (macOS)/Ctrl+click
    (Windows) to open it; `Esc` or `q` to close it.
 5. Press `<leader>jb` to list every issue key in the current buffer (with line
-   numbers) and open one with `<CR>`. Press `<leader>ja` to see unresolved
-   issues assigned to you, `<leader>js` to enter a JQL query and page through
-   the matches, `<leader>jf` to enter a filter id and page through its issues
-   (with a live details preview pane), or `<leader>jh` to reopen something you
-   viewed recently (history is deduped and persisted between sessions). Use
-   `j`/`k` (or `<S-N>/<S-P>`) to move through the list, `<CR>` to open an issue
-   (the buffer picker closes by default; other lists stay open so you can come
-   right back), `<C-f>/<C-b>` to change pages, and `q`/`Esc` to close the
-   popup(s).
+   numbers) and open one with `<CR>`; closing the issue popup returns you to
+   the list. Press `<leader>ja` to see unresolved issues assigned to you,
+   `<leader>js` to enter a JQL query and page through the matches, `<leader>jf`
+   to enter a filter id and page through its issues (with a live details
+   preview pane), or `<leader>jh` to reopen something you viewed recently
+   (history is deduped and persisted between sessions). Use `j`/`k` (or
+   `<S-N>/<S-P>`) to move through the list, `<CR>` to open an issue, `<C-f>/<C-b>`
+   to change pages, and `q`/`Esc` to close the popup(s).
 
 Inside the JQL prompt, `Esc` drops you into Normal mode so you can
 edit/yank/clear text with your usual motions. The left sidebar lists your

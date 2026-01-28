@@ -93,6 +93,7 @@ Mouse support (optional but nice):
 
 - `o` opens the issue in the default browser.
 - Cursor on a URL + `<CR>` opens that URL.
+- When opened from a list popup, `q`/`Esc` returns to that list in the same state.
 
 **States**
 
@@ -134,6 +135,7 @@ Mouse support (optional but nice):
 
 - `<CR>` opens issue details for selected entry.
 - When `close_on_select = true`, picker closes after opening; otherwise it stays open.
+- Closing issue details returns focus to the picker when it remains open.
 
 ### 4) Assigned-to-me list (`<leader>ja`)
 
@@ -195,6 +197,7 @@ Mouse support (optional but nice):
 - Right-side preview pane shows full issue details for the selected row.
 - Moving the selection updates the preview pane without leaving the list.
 - Provide paging (`<C-f>` / `<C-b>`).
+- Opening an issue detail popup from the list returns you to the list on close.
 
 ### 7) Viewed issue history (`<leader>jh`)
 

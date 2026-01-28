@@ -108,7 +108,7 @@ local default_config = {
     width = 0.55,
     height = 0.5,
     border = "rounded",
-    close_on_select = true,
+    close_on_select = false,
   },
   popup = {
     width = 0.65,
@@ -1458,6 +1458,7 @@ function M.open_issue(issue_key, opts)
   end
   opts = opts or {}
   local return_focus = opts.return_focus
+  local return_hint = opts.return_hint
   if opts.navigation ~= nil then
     navigation_state = opts.navigation
   else
@@ -1478,7 +1479,11 @@ function M.open_issue(issue_key, opts)
         end
         nav_context = navigation_payload()
       end
-      popup.render(issue, config, { navigation = nav_context, return_focus = return_focus })
+      popup.render(issue, config, {
+        navigation = nav_context,
+        return_focus = return_focus,
+        return_hint = return_hint,
+      })
     end)
   end)
 end
@@ -1524,12 +1529,13 @@ function M.open_buffer_issue_list()
       empty_message = "No Jira issue keys found in this buffer.",
       layout = config.buffer_popup,
       preview = { bufnr = bufnr },
-      close_on_select = config.buffer_popup and config.buffer_popup.close_on_select,
-      on_select = function(issue)
+      close_on_select = false,
+      on_select = function(issue, ctx)
         local nav = update_navigation_from_buffer(bufnr, issue.key)
         local opts = { navigation = nav }
-        if origin_win and vim.api.nvim_win_is_valid(origin_win) then
-          opts.return_focus = origin_win
+        if ctx and ctx.win and vim.api.nvim_win_is_valid(ctx.win) then
+          opts.return_focus = ctx.win
+          opts.return_hint = ctx.title
         end
         M.open_issue(issue.key, opts)
       end,
@@ -1588,8 +1594,15 @@ local function open_issue_from_list(issue, ctx)
     return
   end
   local win = ctx and ctx.win
+  local opts = {}
   if win and vim.api.nvim_win_is_valid(win) then
-    M.open_issue(issue.key, { return_focus = win })
+    opts.return_focus = win
+  end
+  if ctx and ctx.title then
+    opts.return_hint = ctx.title
+  end
+  if opts.return_focus then
+    M.open_issue(issue.key, opts)
   else
     M.open_issue(issue.key)
   end
