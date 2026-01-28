@@ -891,8 +891,17 @@ local function attach_listeners(state, on_submit, on_change, help_text)
   end
   local function submit_query()
     local text = buffer_text(state.buf)
-    close_prompt(state)
-    on_submit(text)
+    local close_after = state.close_on_submit
+    local result = on_submit(text)
+    if result == false then
+      close_after = false
+    elseif type(result) == "string" then
+      set_help(state, result)
+      close_after = false
+    end
+    if close_after then
+      close_prompt(state)
+    end
   end
   local function open_help_popup()
     popup.show_help(state.config)
@@ -908,6 +917,10 @@ local function attach_listeners(state, on_submit, on_change, help_text)
       return "<CR>"
     end
     if apply_history_selection(state) then
+      return ""
+    end
+    if state.submit_on_enter then
+      submit_query()
       return ""
     end
     return "<CR>"
@@ -1025,12 +1038,14 @@ local function attach_listeners(state, on_submit, on_change, help_text)
     handle_enter_insert,
     with_desc(expr_opts, "jira.nvim: apply history selection or submit query")
   )
-  vim.keymap.set(
-    { "i", "n" },
-    "<C-y>",
-    submit_query,
-    with_desc(key_opts, "jira.nvim: submit JQL query")
-  )
+  if state.enable_ctrl_y then
+    vim.keymap.set(
+      { "i", "n" },
+      "<C-y>",
+      submit_query,
+      with_desc(key_opts, "jira.nvim: submit JQL query")
+    )
+  end
   vim.keymap.set(
     { "i", "n" },
     "<C-n>",
@@ -1180,7 +1195,7 @@ end
 ---autocomplete.
 ---@param opts table|nil Options such as default text, callbacks, and
 ---plugin config.
----@return boolean opened True when the prompt was successfully created.
+---@return table|nil state Prompt state when opened successfully.
 function JQLPrompt.open(opts)
   opts = opts or {}
   local default_value = opts.default or ""
@@ -1190,6 +1205,11 @@ function JQLPrompt.open(opts)
   local on_close = opts.on_close
   local config = opts.config or {}
   local autocomplete_enabled = opts.autocomplete ~= false
+  local close_on_submit = opts.close_on_submit ~= false
+  local submit_on_enter = opts.submit_on_enter == true
+  local enable_ctrl_y = opts.enable_ctrl_y ~= false
+  local title = opts.title or "JQL Search"
+  local shortcut_section = opts.shortcut_section or "jql"
   local history_entries = {}
   if type(opts.history) == "table" then
     for _, entry in ipairs(opts.history) do
@@ -1210,7 +1230,7 @@ function JQLPrompt.open(opts)
     return false
   end
   local dims = build_dimensions(config, default_value)
-  local bar_lines, bar_highlights = popup.shortcut_bar_lines("jql", dims.width)
+  local bar_lines, bar_highlights = popup.shortcut_bar_lines(shortcut_section, dims.width)
   local bar_height = math.max(1, #bar_lines)
   local content_height = math.max(3, dims.height - bar_height)
   local min_prompt_width = 30
@@ -1237,7 +1257,7 @@ function JQLPrompt.open(opts)
       row = dims.row,
       style = "minimal",
       border = dims.border,
-      title = "JQL Search",
+      title = title,
       title_pos = "center",
       focusable = false,
     }
@@ -1347,6 +1367,9 @@ function JQLPrompt.open(opts)
     win = win,
     autocomplete = nil,
     autocomplete_enabled = autocomplete_enabled,
+    close_on_submit = close_on_submit,
+    submit_on_enter = submit_on_enter,
+    enable_ctrl_y = enable_ctrl_y,
     cache = {},
     config = config,
     suggestion_timer = nil,
@@ -1376,7 +1399,28 @@ function JQLPrompt.open(opts)
   highlight_buffer(buf, state.autocomplete)
   attach_listeners(state, on_submit, on_change, help_text)
   vim.cmd("startinsert")
-  return true
+  return state
+end
+
+---Update prompt help text without reopening.
+---@param state table|nil Prompt state.
+---@param text string|nil Help text to display.
+---@return nil
+function JQLPrompt.set_help(state, text)
+  if not state or state.closed then
+    return
+  end
+  set_help(state, text)
+end
+
+---Close an active prompt programmatically.
+---@param state table|nil Prompt state.
+---@return nil
+function JQLPrompt.close(state)
+  if not state or state.closed then
+    return
+  end
+  close_prompt(state)
 end
 
 return JQLPrompt

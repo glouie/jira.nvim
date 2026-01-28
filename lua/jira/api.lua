@@ -959,6 +959,136 @@ function M.fetch_filter(filter_id, config, callback)
   end)
 end
 
+---Fetch the current Jira user (for filter ownership checks).
+---@param config table Plugin configuration containing API credentials and base URL.
+---@param callback fun(user:table|nil, err:string|nil) Invoked with user profile or error.
+---@return nil
+function M.fetch_current_user(config, callback)
+  local api_config = config.api or {}
+  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
+  if base_url == "" then
+    callback(
+      nil,
+      "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable."
+    )
+    return
+  end
+  local auth, auth_err = utils.encode_basic_auth(
+    api_config.email or vim.env.JIRA_API_EMAIL,
+    api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY
+  )
+  if not auth then
+    callback(
+      nil,
+      string.format(
+        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
+        auth_err
+      )
+    )
+    return
+  end
+  local endpoint = string.format("%s/rest/api/3/myself", base_url)
+  run_command(build_get_args(endpoint, auth), function(body, err)
+    if err then
+      callback(nil, humanize_remote_error(err, "current user", { base_url = base_url }))
+      return
+    end
+    local ok, data = pcall(utils.json_decode, body)
+    if not ok or type(data) ~= "table" then
+      callback(nil, "Jira returned a response that could not be parsed while loading the current user.")
+      return
+    end
+    callback({
+      account_id = data.accountId,
+      display_name = utils.trim(data.displayName or ""),
+    }, nil)
+  end)
+end
+
+---Fetch saved filters visible to the user.
+---@param config table Plugin configuration containing API credentials and base URL.
+---@param opts table|fun Options like start_at/max_results; or callback when opts omitted.
+---@param callback fun(result:table|nil, err:string|nil) Invoked with filters or an error.
+---@return nil
+function M.fetch_filters(config, opts, callback)
+  if type(opts) == "function" then
+    callback = opts
+    opts = {}
+  end
+  opts = opts or {}
+  local api_config = config.api or {}
+  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
+  if base_url == "" then
+    callback(
+      nil,
+      "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable."
+    )
+    return
+  end
+  local auth, auth_err = utils.encode_basic_auth(
+    api_config.email or vim.env.JIRA_API_EMAIL,
+    api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY
+  )
+  if not auth then
+    callback(
+      nil,
+      string.format(
+        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
+        auth_err
+      )
+    )
+    return
+  end
+
+  local start_at = math.max(0, tonumber(opts.start_at) or 0)
+  local max_results = clamp_page_size(opts.max_results or 100)
+  local endpoint = string.format(
+    "%s/rest/api/3/filter/search?startAt=%d&maxResults=%d&expand=%s",
+    base_url,
+    start_at,
+    max_results,
+    utils.url_encode("owner")
+  )
+  run_command(build_get_args(endpoint, auth), function(body, err)
+    if err then
+      callback(
+        nil,
+        humanize_remote_error(err, "filters", { base_url = base_url, subject_label = "saved filters" })
+      )
+      return
+    end
+    local ok, data = pcall(utils.json_decode, body)
+    if not ok or type(data) ~= "table" then
+      callback(nil, "Jira returned a response that could not be parsed while listing filters.")
+      return
+    end
+    local values = data.values
+    if (vim and vim.NIL and values == vim.NIL) or type(values) ~= "table" then
+      values = {}
+    end
+    local filters = {}
+    for _, entry in ipairs(values) do
+      local owner = entry.owner or {}
+      if vim and vim.NIL and owner == vim.NIL then
+        owner = {}
+      end
+      table.insert(filters, {
+        id = entry.id,
+        name = utils.trim(entry.name or ""),
+        owner_name = utils.trim(owner.displayName or owner.name or owner.emailAddress or ""),
+        owner_account_id = owner.accountId,
+        favorite = entry.favourite == true or entry.isFavourite == true or entry.isFavorite == true,
+      })
+    end
+    callback({
+      filters = filters,
+      total = tonumber(data.total) or #filters,
+      start_at = tonumber(data.startAt) or start_at,
+      max_results = tonumber(data.maxResults) or max_results,
+    }, nil)
+  end)
+end
+
 ---Normalize mixed autocomplete values into a list of strings.
 ---@param list table|string[]|nil Raw list from Jira autocomplete endpoints.
 ---@return string[] normalized Flattened string values.

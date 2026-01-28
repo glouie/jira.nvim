@@ -96,6 +96,13 @@ local default_config = {
     max_results = 50,
     history_size = 50,
   },
+  filter_list_popup = {
+    keymap = "<leader>jj",
+    width = 0.6,
+    height = 0.6,
+    border = "rounded",
+    max_results = 100,
+  },
   history_popup = {
     keymap = "<leader>jh",
     width = 0.55,
@@ -1367,6 +1374,7 @@ function M.setup(opts)
   config.assigned_popup = vim.tbl_deep_extend("force", deepcopy(default_config.assigned_popup), opts.assigned_popup or {})
   config.search_popup = vim.tbl_deep_extend("force", deepcopy(default_config.search_popup), opts.search_popup or {})
   config.filter_popup = vim.tbl_deep_extend("force", deepcopy(default_config.filter_popup), opts.filter_popup or {})
+  config.filter_list_popup = vim.tbl_deep_extend("force", deepcopy(default_config.filter_list_popup), opts.filter_list_popup or {})
   config.history_popup = vim.tbl_deep_extend("force", deepcopy(default_config.history_popup), opts.history_popup or {})
   config.buffer_popup = vim.tbl_deep_extend("force", deepcopy(default_config.buffer_popup), opts.buffer_popup or {})
   config.statusline = vim.tbl_deep_extend("force", deepcopy(default_config.statusline), statusline_opts or {})
@@ -1417,6 +1425,12 @@ function M.setup(opts)
     vim.keymap.set("n", filter_keymap, function()
       M.open_filter_search()
     end, { desc = "jira.nvim: search Jira via filter" })
+  end
+  local filter_list_keymap = config.filter_list_popup and config.filter_list_popup.keymap
+  if filter_list_keymap and filter_list_keymap ~= "" then
+    vim.keymap.set("n", filter_list_keymap, function()
+      M.open_filter_list()
+    end, { desc = "jira.nvim: list saved Jira filters" })
   end
   local buffer_keymap = config.buffer_popup and config.buffer_popup.keymap
   if buffer_keymap and buffer_keymap ~= "" then
@@ -1809,6 +1823,43 @@ local function render_filter_page(filter, start_at)
   end)
 end
 
+---Fetch a filter by id and render its issue list.
+---@param filter_id string|number Filter identifier.
+---@param opts table|nil Options including callbacks.
+---@return nil
+local function run_filter_by_id(filter_id, opts)
+  opts = opts or {}
+  local id = utils.trim(filter_id and tostring(filter_id) or "")
+  if id == "" then
+    if opts.on_error then
+      opts.on_error("Filter id is required.")
+    end
+    return
+  end
+  api.fetch_filter(id, config, function(filter, err)
+    vim.schedule(function()
+      if err then
+        if opts.on_error then
+          opts.on_error(err)
+        end
+        return
+      end
+      filter = filter or { id = id, name = "", jql = "" }
+      if filter.jql == "" then
+        if opts.on_error then
+          opts.on_error("Filter returned no JQL. Please check the filter id.")
+        end
+        return
+      end
+      record_filter_history(filter)
+      render_filter_page(filter, 0)
+      if opts.on_success then
+        opts.on_success(filter)
+      end
+    end)
+  end)
+end
+
 ---Open a popup showing unresolved issues assigned to the current user.
 ---@return nil
 function M.open_assigned_issues()
@@ -1830,7 +1881,7 @@ function M.open_jql_search()
     render_jql_page(query)
   end
   local history_snapshot = deepcopy(search_history)
-  local ok = jql_prompt.open({
+  local prompt_state = jql_prompt.open({
     default = default_query,
     help = help,
     config = config,
@@ -1847,7 +1898,7 @@ function M.open_jql_search()
       end
     end,
   })
-  if not ok then
+  if not prompt_state then
     if vim.ui and vim.ui.input then
       vim.ui.input({ prompt = "JQL query: ", default = default_query }, submit)
     else
@@ -1860,9 +1911,11 @@ function M.open_jql_search()
 end
 
 ---Open a filter search prompt and list issues for the selected filter.
+---@param opts table|nil Options such as default and auto submit.
 ---@return nil
-function M.open_filter_search()
-  local default_value = last_filter_query or ""
+function M.open_filter_search(opts)
+  opts = opts or {}
+  local default_value = opts.default or last_filter_query or ""
   local help = "Enter Jira filter ID (number). Example: 12345"
   local history_entries = {}
   for _, entry in ipairs(filter_history) do
@@ -1874,34 +1927,40 @@ function M.open_filter_search()
       table.insert(history_entries, label)
     end
   end
+  local prompt_state
+  local function set_prompt_help(message)
+    if prompt_state then
+      jql_prompt.set_help(prompt_state, message)
+      return
+    end
+    if message and message ~= "" then
+      vim.notify(string.format("jira.nvim: %s", message), vim.log.levels.WARN)
+    end
+  end
   local function submit(input)
     local raw = utils.trim(input or "")
     if raw == "" then
-      return
+      set_prompt_help("Filter id is required.")
+      return false
     end
     last_filter_query = raw
     local id = parse_filter_id(raw)
     if not id then
-      vim.notify("jira.nvim: please enter a numeric filter id", vim.log.levels.WARN)
-      return
+      set_prompt_help("Enter a numeric Jira filter id and press <CR> to search.")
+      return false
     end
-    api.fetch_filter(id, config, function(filter, err)
-      vim.schedule(function()
-        if err then
-          vim.notify(string.format("jira.nvim: %s", err), vim.log.levels.ERROR)
-          return
+    run_filter_by_id(id, {
+      on_error = set_prompt_help,
+      on_success = function()
+        if prompt_state then
+          jql_prompt.close(prompt_state)
+          prompt_state = nil
         end
-        filter = filter or { id = id, name = "", jql = "" }
-        if filter.jql == "" then
-          vim.notify("jira.nvim: filter returned no JQL", vim.log.levels.WARN)
-          return
-        end
-        record_filter_history(filter)
-        render_filter_page(filter, 0)
-      end)
-    end)
+      end,
+    })
+    return false
   end
-  local ok = jql_prompt.open({
+  prompt_state = jql_prompt.open({
     default = default_value,
     help = help,
     config = config,
@@ -1918,8 +1977,18 @@ function M.open_filter_search()
       end
     end,
     autocomplete = false,
+    close_on_submit = false,
+    submit_on_enter = true,
+    enable_ctrl_y = false,
+    title = "Filter Search",
+    shortcut_section = "filter",
   })
-  if not ok then
+  if prompt_state and opts.submit then
+    vim.schedule(function()
+      submit(default_value)
+    end)
+  end
+  if not prompt_state then
     if vim.ui and vim.ui.input then
       vim.ui.input({ prompt = "Filter ID: ", default = default_value }, submit)
     else
@@ -1929,6 +1998,105 @@ function M.open_filter_search()
       end
     end
   end
+end
+
+---Open a popup listing saved Jira filters for the current user.
+---@return nil
+function M.open_filter_list()
+  local max_results = (config.filter_list_popup and config.filter_list_popup.max_results) or 100
+  local function sort_filters(list)
+    table.sort(list, function(a, b)
+      local name_a = utils.trim(a.name or ""):lower()
+      local name_b = utils.trim(b.name or ""):lower()
+      if name_a == name_b then
+        return tostring(a.id or "") < tostring(b.id or "")
+      end
+      return name_a < name_b
+    end)
+  end
+
+  local function fetch_all_filters(callback)
+    local collected = {}
+    local function fetch_page(start_at)
+      api.fetch_filters(config, { start_at = start_at, max_results = max_results }, function(result, err)
+        vim.schedule(function()
+          if err then
+            callback(nil, err)
+            return
+          end
+          result = result or {}
+          for _, entry in ipairs(result.filters or {}) do
+            table.insert(collected, entry)
+          end
+          local total = tonumber(result.total) or #collected
+          local page_size = tonumber(result.max_results) or max_results
+          local next_start = (tonumber(result.start_at) or start_at) + page_size
+          if next_start < total then
+            fetch_page(next_start)
+          else
+            callback(collected, nil)
+          end
+        end)
+      end)
+    end
+    fetch_page(0)
+  end
+
+  api.fetch_current_user(config, function(user, err)
+    vim.schedule(function()
+      if err then
+        vim.notify(string.format("jira.nvim: %s", err), vim.log.levels.ERROR)
+        return
+      end
+      local account_id = user and user.account_id or nil
+      fetch_all_filters(function(filters, fetch_err)
+        if fetch_err then
+          vim.notify(string.format("jira.nvim: %s", fetch_err), vim.log.levels.ERROR)
+          return
+        end
+        filters = filters or {}
+        local favorites = {}
+        local owned = {}
+        local seen = {}
+        for _, filter in ipairs(filters) do
+          local id = filter.id and tostring(filter.id) or ""
+          if id ~= "" then
+            if filter.favorite and not seen[id] then
+              table.insert(favorites, filter)
+              seen[id] = true
+            end
+            if account_id and filter.owner_account_id == account_id and not seen[id] then
+              table.insert(owned, filter)
+              seen[id] = true
+            end
+          end
+        end
+        sort_filters(favorites)
+        sort_filters(owned)
+        local ordered = {}
+        for _, entry in ipairs(favorites) do
+          table.insert(ordered, entry)
+        end
+        for _, entry in ipairs(owned) do
+          table.insert(ordered, entry)
+        end
+        popup.render_filter_list(ordered, config, {
+          title = "Saved Filters",
+          subtitle = string.format("%d filters", #ordered),
+          empty_message = "No saved filters found.",
+          layout = config.filter_list_popup,
+          close_on_select = true,
+          on_select = function(filter)
+            if not filter or not filter.id then
+              return
+            end
+            M.open_filter_search({ default = tostring(filter.id), submit = true })
+          end,
+          source = "filter_list",
+        })
+      end)
+    end)
+  end)
 end
 
 ---Open a popup listing previously viewed issues from history.

@@ -73,6 +73,16 @@ local shortcut_sections = {
       { keys = "?", description = "Open help popup", category = "help" },
     },
   },
+  filter = {
+    title = "Filter search popup",
+    entries = {
+      { keys = "q/Esc/<C-c><C-c>", description = "Cancel search", category = "exit" },
+      { keys = "<C-n>/<C-p>", description = "History down/up", category = "nav" },
+      { keys = "<Tab>", description = "Toggle focus or cancel preview", category = "nav" },
+      { keys = "<CR>", description = "Apply history selection or submit", category = "submit" },
+      { keys = "?", description = "Open help popup", category = "help" },
+    },
+  },
   help = {
     title = "Help popup",
     entries = {
@@ -197,6 +207,11 @@ local function ensure_popup_highlights()
   vim.api.nvim_set_hl(0, "JiraPopupKey", {
     default = true,
     fg = catppuccin.peach,
+    bold = true,
+  })
+  vim.api.nvim_set_hl(0, "JiraPopupFavorite", {
+    default = true,
+    fg = catppuccin.yellow,
     bold = true,
   })
   vim.api.nvim_set_hl(0, "JiraPopupUser", {
@@ -448,7 +463,7 @@ local function help_popup_lines(width, opts)
   local highlights = {}
   local available_width =
     math.min(help_line_limit, math.max(30, (width or 80) - 4))
-  for _, key in ipairs({ "issue", "list", "jql" }) do
+  for _, key in ipairs({ "issue", "list", "jql", "filter" }) do
     local section = resolve_shortcut_section(key, opts)
     if section and section.entries and #section.entries > 0 then
       table.insert(lines, section.title or key)
@@ -2271,6 +2286,67 @@ local function build_issue_list_lines(issues, dims, opts)
   }
 end
 
+---Construct filter list lines and metadata for display.
+---@param filters table[] List of filter entries.
+---@param dims table Dimension info including width.
+---@param opts table|nil Display options (title, subtitle, empty message).
+---@return table data Lines and positional metadata for highlighting.
+local function build_filter_list_lines(filters, dims, opts)
+  filters = filters or {}
+  opts = opts or {}
+  local title = opts.title or "Saved Filters"
+  local lines = {}
+  local highlights = {}
+  local width = math.max(50, dims.width)
+  local total_count = opts.pagination and tonumber(opts.pagination.total) or #filters
+  local number_width = math.max(3, #tostring(math.max(total_count or 0, #filters)))
+  local fav_width = 1
+  local id_width = math.max(4, math.min(10, math.floor(width * 0.12)))
+  local owner_width = math.max(10, math.min(18, math.floor(width * 0.18)))
+  local name_width = math.max(18, width - number_width - fav_width - id_width - owner_width - 10)
+  local format_string = "%-" .. number_width .. "s │ %" .. fav_width .. "s │ %-" .. id_width .. "s │ %-" .. name_width .. "s │ %s"
+
+  table.insert(lines, title)
+  local subtitle = opts.subtitle or string.format("%d filters", #filters)
+  table.insert(lines, subtitle)
+  table.insert(lines, "")
+  local title_line = 1
+  local summary_line = 2
+  local header_line = #lines + 1
+  table.insert(lines, string.format(format_string, "#", "*", "ID", "NAME", "OWNER"))
+  local separator_line = #lines + 1
+  table.insert(lines, string.rep("─", width))
+  local data_offset = #lines
+  local empty_line
+  if #filters == 0 then
+    empty_line = #lines + 1
+    table.insert(lines, opts.empty_message or "No filters found.")
+  else
+    for idx, filter in ipairs(filters) do
+      local fav = filter.favorite and "*" or ""
+      local id = truncate_cell(tostring(filter.id or ""), id_width)
+      local name = truncate_cell(filter.name or "", name_width)
+      local owner = truncate_cell(filter.owner_name or "", owner_width)
+      local line = string.format(format_string, tostring(idx), fav, id, name, owner)
+      table.insert(lines, line)
+      if fav ~= "" then
+        local fav_col = number_width + 2
+        add_highlight_entry(highlights, "JiraPopupFavorite", #lines - 1, fav_col, fav_col + fav_width)
+      end
+    end
+  end
+  return {
+    lines = lines,
+    highlights = highlights,
+    title_line = title_line,
+    summary_line = summary_line,
+    header_line = header_line,
+    separator_line = separator_line,
+    data_offset = data_offset,
+    empty_line = empty_line,
+  }
+end
+
 ---Return a comma-separated version list from Jira version values.
 ---@param values table|string|nil Version field value.
 ---@return string text Comma-separated version names.
@@ -3450,6 +3526,241 @@ function Popup.render_issue_list(issues, config, opts)
         return
       end
       if closed == list_state.win or closed == list_state.container_win or closed == list_state.bar_win or closed == list_state.preview_win then
+        close_issue_list()
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    group = list_group,
+    buffer = buf,
+    callback = function()
+      sync_list_selection_to_cursor()
+    end,
+  })
+  vim.api.nvim_create_autocmd("CmdlineEnter", {
+    group = list_group,
+    pattern = { "/", "?" },
+    callback = function()
+      if not list_state.win or not vim.api.nvim_win_is_valid(list_state.win) then
+        return
+      end
+      if vim.api.nvim_get_current_win() ~= list_state.win then
+        return
+      end
+      list_state.search_active = true
+      list_state.selection_before_search = list_state.selection
+    end,
+  })
+  vim.api.nvim_create_autocmd("CmdlineLeave", {
+    group = list_group,
+    pattern = { "/", "?" },
+    callback = function()
+      if not list_state.search_active then
+        return
+      end
+      if vim.v.event and vim.v.event.abort then
+        restore_selection_before_search()
+      else
+        sync_list_selection_to_cursor()
+        list_state.selection_before_search = nil
+      end
+      list_state.search_active = false
+    end,
+  })
+
+  local key_opts = { buffer = buf, nowait = true, silent = true }
+  vim.keymap.set("n", "q", Popup.close_all, key_opts)
+  vim.keymap.set("n", "<Esc>", Popup.close_all, key_opts)
+  vim.keymap.set("n", "j", function()
+    move_issue_list_selection(1)
+  end, key_opts)
+  vim.keymap.set("n", "k", function()
+    move_issue_list_selection(-1)
+  end, key_opts)
+  vim.keymap.set("n", "<Down>", function()
+    move_issue_list_selection(1)
+  end, key_opts)
+  vim.keymap.set("n", "<Up>", function()
+    move_issue_list_selection(-1)
+  end, key_opts)
+  vim.keymap.set("n", "<S-N>", function()
+    move_issue_list_selection(1)
+  end, key_opts)
+  vim.keymap.set("n", "<S-P>", function()
+    move_issue_list_selection(-1)
+  end, key_opts)
+  vim.keymap.set("n", "gg", function()
+    if list_state.issues and #list_state.issues > 0 then
+      list_state.selection = 1
+      refresh_issue_list_selection()
+    end
+  end, key_opts)
+  vim.keymap.set("n", "G", function()
+    if list_state.issues and #list_state.issues > 0 then
+      list_state.selection = #list_state.issues
+      refresh_issue_list_selection()
+    end
+  end, key_opts)
+  vim.keymap.set("n", "<C-f>", function()
+    goto_issue_list_page(1)
+  end, key_opts)
+  vim.keymap.set("n", "<C-b>", function()
+    goto_issue_list_page(-1)
+  end, key_opts)
+  vim.keymap.set("n", "<CR>", activate_current_issue, key_opts)
+  vim.keymap.set("n", "?", function()
+    Popup.show_help(config)
+  end, key_opts)
+
+  return win
+end
+
+---Render a popup listing Jira filters with selection handlers.
+---@param filters table[] List of saved filters to display.
+---@param config table Plugin configuration for layout and styling.
+---@param opts table|nil Options including title, pagination, handlers, and layout overrides.
+---@return nil
+function Popup.render_filter_list(filters, config, opts)
+  Popup.close()
+  close_issue_list()
+  ensure_popup_highlights()
+  config = config or {}
+  opts = opts or {}
+  filters = filters or {}
+
+  local layout_cfg = opts.layout or (config and config.filter_list_popup) or {}
+  local dims = list_dimensions(config, layout_cfg)
+  local border = layout_cfg.border or (config.popup and config.popup.border) or "rounded"
+  local title = opts.title or layout_cfg.title or "Saved Filters"
+
+  local container_buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[container_buf].bufhidden = "wipe"
+  vim.bo[container_buf].modifiable = false
+  vim.bo[container_buf].filetype = "jira_popup_container"
+
+  local container_win = vim.api.nvim_open_win(container_buf, false, {
+    relative = "editor",
+    width = dims.width,
+    height = dims.height,
+    col = dims.col,
+    row = dims.row,
+    style = "minimal",
+    border = border,
+    title = title,
+    title_pos = "center",
+    focusable = false,
+  })
+
+  local bar_lines, bar_highlights = shortcut_bar_lines("list", dims.width)
+  local bar_height = math.max(1, #bar_lines)
+  local content_height = math.max(4, dims.height - bar_height)
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].filetype = "jirafilter-list"
+
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "win",
+    win = container_win,
+    width = dims.width,
+    height = content_height,
+    col = 0,
+    row = 0,
+    style = "minimal",
+    border = "none",
+  })
+
+  vim.api.nvim_win_set_option(win, "wrap", true)
+  vim.api.nvim_win_set_option(win, "winhl", "Normal:JiraPopupDetailsBody,FloatBorder:JiraPopupDetailsHeader")
+
+  local bar_buf = vim.api.nvim_create_buf(false, true)
+  fill_buffer(bar_buf, bar_lines)
+  apply_highlights(bar_buf, bar_lines, bar_highlights, nil, nil)
+  local bar_win = vim.api.nvim_open_win(bar_buf, false, {
+    relative = "win",
+    win = container_win,
+    width = dims.width,
+    height = bar_height,
+    col = 0,
+    row = content_height,
+    style = "minimal",
+    border = "none",
+    focusable = false,
+  })
+  vim.api.nvim_win_set_option(bar_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
+  vim.api.nvim_win_set_option(bar_win, "wrap", true)
+
+  local content_dims = vim.deepcopy(dims)
+  content_dims.height = content_height
+
+  local layout = build_filter_list_lines(filters, content_dims, {
+    title = title,
+    pagination = opts.pagination,
+    subtitle = opts.subtitle,
+    empty_message = opts.empty_message,
+  })
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, layout.lines)
+  vim.bo[buf].modifiable = false
+
+  if layout.title_line then
+    vim.api.nvim_buf_add_highlight(buf, popup_ns, "JiraPopupListTitle", layout.title_line - 1, 0, -1)
+  end
+  if layout.summary_line then
+    vim.api.nvim_buf_add_highlight(buf, popup_ns, "JiraPopupListTitle", layout.summary_line - 1, 0, -1)
+  end
+  if layout.header_line then
+    vim.api.nvim_buf_add_highlight(buf, popup_ns, "JiraPopupListHeader", layout.header_line - 1, 0, -1)
+  end
+  if layout.empty_line then
+    vim.api.nvim_buf_add_highlight(buf, popup_ns, "JiraPopupListEmpty", layout.empty_line - 1, 0, -1)
+  end
+  if layout.highlights and #layout.highlights > 0 then
+    for _, mark in ipairs(layout.highlights) do
+      vim.api.nvim_buf_add_highlight(buf, popup_ns, mark.group, mark.line, mark.start_col, mark.end_col)
+    end
+  end
+
+  list_state = {
+    win = win,
+    buf = buf,
+    issues = filters,
+    selection = (#filters > 0) and 1 or nil,
+    data_offset = layout.data_offset,
+    autocmd = nil,
+    on_select = opts.on_select,
+    pagination = opts.pagination,
+    page_handlers = opts.pagination_handlers,
+    close_on_select = opts.close_on_select == true,
+    title = title,
+    source = opts.source,
+    search_active = false,
+    selection_before_search = nil,
+    container_win = container_win,
+    container_buf = container_buf,
+    bar_win = bar_win,
+    bar_buf = bar_buf,
+    preview_win = nil,
+    preview_buf = nil,
+    preview_source_buf = nil,
+    preview_height = content_height,
+    preview_mode = nil,
+    preview_cache = {},
+    preview_request_key = nil,
+    preview_pending = false,
+    config = config,
+  }
+
+  if list_state.selection then
+    refresh_issue_list_selection()
+  end
+
+  vim.api.nvim_clear_autocmds({ group = list_group })
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = list_group,
+    callback = function(args)
+      local closed = tonumber(args.match)
+      if closed == list_state.win or closed == list_state.container_win or closed == list_state.bar_win then
         close_issue_list()
       end
     end,

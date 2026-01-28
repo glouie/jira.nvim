@@ -15,9 +15,10 @@ The goal is to make UI changes predictable and reviewable:
 4. **Assigned-to-me list** (`<leader>ja`) — unresolved issues assigned to current user
 5. **JQL search prompt + results** (`<leader>js`) — prompt with history + server-backed suggestions and paged results
 6. **Filter search prompt + results** (`<leader>jf`) — prompt for filter id with history + results list with detail preview
-7. **Viewed issue history** (`<leader>jh`) — persisted list of recently viewed issues
-8. Issue metrics popup (TBD)
-9. Filter metrics popup (TBD)
+7. **Saved filters list** (`<leader>jj`) — list of saved filters (favorites first) with owner details
+8. **Viewed issue history** (`<leader>jh`) — persisted list of recently viewed issues
+9. Issue metrics popup (TBD)
+10. Filter metrics popup (TBD)
 
 ## Global UX principles
 
@@ -188,7 +189,7 @@ Mouse support (optional but nice):
 **Key behavior**
 
 - `Esc` enters Normal mode in the prompt for editing/yanking.
-- Submit with `<CR>` in Normal mode or `<C-y>`.
+- Submit with `<CR>` in Normal or Insert mode.
 - Exit with `<C-c><C-c>` or `q`/`Esc`.
 
 **Results UI**
@@ -198,8 +199,24 @@ Mouse support (optional but nice):
 - Moving the selection updates the preview pane without leaving the list.
 - Provide paging (`<C-f>` / `<C-b>`).
 - Opening an issue detail popup from the list returns you to the list on close.
+- When the filter id is invalid or not found, show the error in the prompt and keep it open for edits.
 
-### 7) Viewed issue history (`<leader>jh`)
+### 7) Saved filters list (`<leader>jj`)
+
+**Purpose**
+
+- List saved filters the user can access, with favorites first.
+
+**Layout**
+
+- Table of filters showing a favorite marker (*), filter id, name, and owner.
+
+**Behavior**
+
+- Favorites appear first, followed by the remaining filters owned by the user.
+- Selecting a filter submits its id to the filter search flow.
+
+### 8) Viewed issue history (`<leader>jh`)
 
 **Purpose**
 

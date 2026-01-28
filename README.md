@@ -31,6 +31,8 @@ popup.
   controls and totals.
 - `<leader>jf` opens a filter-id prompt, loads the filter's JQL, and shows
   matching issues with a live details preview pane.
+- `<leader>jj` opens a list of your saved filters (favorites first) and lets
+  you jump straight into a filter's results.
 - `<leader>jh` opens a persisted list of issues you've viewed, deduped and
   ready to reopen with `<CR>`.
 - Uses your Atlassian Cloud API token, sourced from environment variables,
@@ -121,6 +123,13 @@ require("jira").setup({
     history_size = 50,
     -- how many past filters to show in the prompt sidebar
   },
+  filter_list_popup = {
+    keymap = "<leader>jj",
+    -- lists saved filters (favorites first)
+    width = 0.6,
+    height = 0.6,
+    max_results = 100,
+  },
   history_popup = {
     keymap = "<leader>jh",
     -- opens the recently-viewed issues table
@@ -166,11 +175,12 @@ many lines in the current buffer are scanned for issue keys when you only want
 to underline the top of very large files. Customize `assigned_popup` to tweak
 the keybinding, size, or number of issues returned by the "assigned to me"
 list, `search_popup` for the JQL prompt/table layout, `filter_popup` for the
-filter prompt/table layout, and `buffer_popup` to control the in-buffer picker
-(size, border, and whether it closes after selection). Issue tables show the
-total result count, the range currently visible, and let you move between rows
-with `j`/`k` (or `<S-N>/<S-P>`), page with `<C-f>/<C-b>`, and hit `<CR>` to open
-the selected issue without dismissing the list.
+filter prompt/table layout, `filter_list_popup` for the saved filters list, and
+`buffer_popup` to control the in-buffer picker (size, border, and whether it
+closes after selection). Issue tables show the total result count, the range
+currently visible, and let you move between rows with `j`/`k` (or `<S-N>/<S-P>`),
+page with `<C-f>/<C-b>`, and hit `<CR>` to open the selected issue without
+dismissing the list.
 
 The Details sidebar rows follow `popup.details_fields`, which accepts a list to
 set both the fields and their order (defaults keep labels at the bottom). Use it
@@ -218,8 +228,9 @@ require("lualine").setup({
    numbers) and open one with `<CR>`; closing the issue popup returns you to
    the list. Press `<leader>ja` to see unresolved issues assigned to you,
    `<leader>js` to enter a JQL query and page through the matches, `<leader>jf`
-   to enter a filter id and page through its issues (with a live details
-   preview pane), or `<leader>jh` to reopen something you viewed recently
+   to enter a filter id and press `<CR>` to submit (errors stay in the prompt
+   so you can edit and resubmit), `<leader>jj` to browse your saved filters
+   (favorites first), or `<leader>jh` to reopen something you viewed recently
    (history is deduped and persisted between sessions). Use `j`/`k` (or
    `<S-N>/<S-P>`) to move through the list, `<CR>` to open an issue, `<C-f>/<C-b>`
    to change pages, and `q`/`Esc` to close the popup(s).
