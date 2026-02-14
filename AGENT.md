@@ -60,7 +60,9 @@ If tests exist, run them before/after changes:
 When you add/modify behavior, update the relevant docs:
 - setup/auth changes → `INSTALL.md` + `README.md`
 - keymap changes → `README.md`
-- internal design changes → consider adding `docs/ARCHITECTURE.md` (future)
+- portable UI/UX design changes → `docs/tui/TUI_SPEC.md` (entrypoint: `docs/UI.md`)
+- Jira.nvim surface behavior changes → `docs/ui-impl/jira/JIRA_SURFACE_MAP.md`
+- internal architecture changes → consider adding `docs/ARCHITECTURE.md` (future)
 
 ## PR checklist
 - [ ] No secrets in code, logs, docs, or tests
