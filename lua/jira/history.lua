@@ -21,7 +21,7 @@ local filter_history = {}
 local function join_path(...)
   local parts = { ... }
   if vim.fs and vim.fs.joinpath then
-    return vim.fs.joinpath(table.unpack(parts))
+    return vim.fs.joinpath(unpack(parts))
   end
   local path = ""
   for _, part in ipairs(parts) do
