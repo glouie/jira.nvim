@@ -1028,10 +1028,11 @@ local function schedule_hover_update()
   if not statusline_updates_enabled() then
     return
   end
+  local uv = vim.uv or vim.loop
   if hover_debounce_timer then
     hover_debounce_timer:stop()
   else
-    hover_debounce_timer = vim.loop.new_timer()
+    hover_debounce_timer = uv.new_timer()
   end
   hover_debounce_timer:start(
     hover_debounce_ms,
@@ -1384,6 +1385,7 @@ function M.setup(opts)
   end
   config = vim.tbl_deep_extend("force", deepcopy(default_config), opts)
   config.api = vim.tbl_deep_extend("force", deepcopy(default_config.api), opts.api or {})
+  api.set_debug(config.debug)
   config.popup = vim.tbl_deep_extend("force", deepcopy(default_config.popup), opts.popup or {})
   config.assigned_popup = vim.tbl_deep_extend("force", deepcopy(default_config.assigned_popup), opts.assigned_popup or {})
   config.created_popup = vim.tbl_deep_extend("force", deepcopy(default_config.created_popup), opts.created_popup or {})
@@ -1408,6 +1410,8 @@ function M.setup(opts)
   statusline_state.template = statusline_template_enabled() and statusline_state.template or nil
   if hover_debounce_timer then
     hover_debounce_timer:stop()
+    hover_debounce_timer:close()
+    hover_debounce_timer = nil
   end
   debug_state.hover_issue = nil
   load_search_history()

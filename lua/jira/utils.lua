@@ -337,7 +337,8 @@ function utils.open_url(url)
     return
   end
   local cmd
-  if vim.fn.has("mac") == 1 or vim.fn.has("macunix") == 1 or (vim.loop and vim.loop.os_uname and vim.loop.os_uname().sysname == "Darwin") then
+  local uv = vim.uv or vim.loop
+  if vim.fn.has("mac") == 1 or vim.fn.has("macunix") == 1 or (uv and uv.os_uname and uv.os_uname().sysname == "Darwin") then
     cmd = { "open", url }
   elseif vim.fn.has("win32") == 1 or vim.fn.has("win64") == 1 then
     cmd = { "cmd.exe", "/c", "start", "", url }

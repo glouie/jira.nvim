@@ -715,7 +715,7 @@ local function apply_statusline(win, status_text)
   if not win or not vim.api.nvim_win_is_valid(win) then
     return
   end
-  vim.api.nvim_win_set_option(win, "statusline", build_statusline_text(status_text))
+  vim.api.nvim_set_option_value("statusline", build_statusline_text(status_text, { win = win }))
 end
 
 local function add_buffer_highlight(buf, group, line, start_col, end_col)
@@ -1788,8 +1788,8 @@ local function lock_window_size(win)
   if not valid_win(win) then
     return
   end
-  pcall(vim.api.nvim_win_set_option, win, "winfixwidth", true)
-  pcall(vim.api.nvim_win_set_option, win, "winfixheight", true)
+  pcall(vim.api.nvim_set_option_value, "winfixwidth", true, { win = win })
+  pcall(vim.api.nvim_set_option_value, "winfixheight", true, { win = win })
 end
 
 ---Find a window's index inside a list.
@@ -2083,12 +2083,8 @@ function Popup.show_help(config)
     border = "none",
     zindex = 80,
   })
-  vim.api.nvim_win_set_option(content_win, "wrap", true)
-  vim.api.nvim_win_set_option(
-    content_win,
-    "winhl",
-    "Normal:JiraPopupDetailsBody,NormalNC:JiraPopupDetailsBody"
-  )
+  vim.api.nvim_set_option_value("wrap", true, { win = content_win })
+  vim.api.nvim_set_option_value("winhl", "Normal:JiraPopupDetailsBody,NormalNC:JiraPopupDetailsBody", { win = content_win })
 
   local bar_win = vim.api.nvim_open_win(bar_buf, false, {
     relative = "win",
@@ -2102,8 +2098,8 @@ function Popup.show_help(config)
     focusable = false,
     zindex = 80,
   })
-  vim.api.nvim_win_set_option(bar_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
-  vim.api.nvim_win_set_option(bar_win, "wrap", true)
+  vim.api.nvim_set_option_value("winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar", { win = bar_win })
+  vim.api.nvim_set_option_value("wrap", true, { win = bar_win })
   lock_window_size(container_win)
   lock_window_size(content_win)
   lock_window_size(bar_win)
@@ -3054,7 +3050,7 @@ end
 ---@param lines string[] Lines to write.
 ---@param opts table|nil Options including filetype and syntax hints.
 ---@return nil
-function fill_buffer(buf, lines, opts)
+fill_buffer = function(buf, lines, opts)
   opts = opts or {}
   lines = sanitize_lines(lines)
   vim.bo[buf].modifiable = true
@@ -3077,7 +3073,7 @@ function fill_buffer(buf, lines, opts)
       ok = pcall(vim.treesitter.start, buf, lang)
     end
     if not ok and allow_syntax_option then
-      pcall(vim.api.nvim_buf_set_option, buf, "syntax", lang)
+      pcall(vim.api.nvim_set_option_value, "syntax", lang, { buf = buf })
     end
   end
 
@@ -3402,8 +3398,8 @@ function Popup.render_issue_list(issues, config, opts)
     border = "none",
   })
 
-  vim.api.nvim_win_set_option(win, "wrap", true)
-  vim.api.nvim_win_set_option(win, "winhl", "Normal:JiraPopupDetailsBody,FloatBorder:JiraPopupDetailsHeader")
+  vim.api.nvim_set_option_value("wrap", true, { win = win })
+  vim.api.nvim_set_option_value("winhl", "Normal:JiraPopupDetailsBody,FloatBorder:JiraPopupDetailsHeader", { win = win })
 
   local bar_buf = vim.api.nvim_create_buf(false, true)
   fill_buffer(bar_buf, bar_lines)
@@ -3419,8 +3415,8 @@ function Popup.render_issue_list(issues, config, opts)
     border = "none",
     focusable = false,
   })
-  vim.api.nvim_win_set_option(bar_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
-  vim.api.nvim_win_set_option(bar_win, "wrap", true)
+  vim.api.nvim_set_option_value("winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar", { win = bar_win })
+  vim.api.nvim_set_option_value("wrap", true, { win = bar_win })
 
   local content_dims = vim.deepcopy(dims)
   content_dims.height = content_height
@@ -3504,7 +3500,7 @@ function Popup.render_issue_list(issues, config, opts)
       border = "none",
       focusable = false,
     })
-    vim.api.nvim_win_set_option(preview_win, "wrap", true)
+    vim.api.nvim_set_option_value("wrap", true, { win = preview_win })
     if preview_mode == "issue" then
       vim.api.nvim_buf_set_lines(preview_buf, 0, -1, false, { "Select an issue to view details." })
     else
@@ -3674,8 +3670,8 @@ function Popup.render_filter_list(filters, config, opts)
     border = "none",
   })
 
-  vim.api.nvim_win_set_option(win, "wrap", true)
-  vim.api.nvim_win_set_option(win, "winhl", "Normal:JiraPopupDetailsBody,FloatBorder:JiraPopupDetailsHeader")
+  vim.api.nvim_set_option_value("wrap", true, { win = win })
+  vim.api.nvim_set_option_value("winhl", "Normal:JiraPopupDetailsBody,FloatBorder:JiraPopupDetailsHeader", { win = win })
 
   local bar_buf = vim.api.nvim_create_buf(false, true)
   fill_buffer(bar_buf, bar_lines)
@@ -3691,8 +3687,8 @@ function Popup.render_filter_list(filters, config, opts)
     border = "none",
     focusable = false,
   })
-  vim.api.nvim_win_set_option(bar_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
-  vim.api.nvim_win_set_option(bar_win, "wrap", true)
+  vim.api.nvim_set_option_value("winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar", { win = bar_win })
+  vim.api.nvim_set_option_value("wrap", true, { win = bar_win })
 
   local content_dims = vim.deepcopy(dims)
   content_dims.height = content_height
@@ -3963,7 +3959,7 @@ function Popup.render(issue, config, context)
       focusable = false,
     })
     track_win(container_win)
-    vim.api.nvim_win_set_option(container_win, "winhl", "FloatTitle:JiraPopupTitleBar")
+    vim.api.nvim_set_option_value("winhl", "FloatTitle:JiraPopupTitleBar", { win = container_win })
 
     local summary_buf = vim.api.nvim_create_buf(false, true)
     local main_buf = vim.api.nvim_create_buf(false, true)
@@ -4056,8 +4052,8 @@ function Popup.render(issue, config, context)
     focusable = false,
   })
   track_win(summary_win)
-  vim.api.nvim_win_set_option(summary_win, "wrap", true)
-  vim.api.nvim_win_set_option(summary_win, "winhl", "Normal:JiraPopupSummaryBackground,NormalNC:JiraPopupSummaryBackground")
+  vim.api.nvim_set_option_value("wrap", true, { win = summary_win })
+  vim.api.nvim_set_option_value("winhl", "Normal:JiraPopupSummaryBackground,NormalNC:JiraPopupSummaryBackground", { win = summary_win })
 
   local main_win = vim.api.nvim_open_win(main_buf, true, {
     relative = "win",
@@ -4071,8 +4067,8 @@ function Popup.render(issue, config, context)
     zindex = 60,
   })
   track_win(main_win)
-  vim.api.nvim_win_set_option(main_win, "wrap", true)
-  vim.api.nvim_win_set_option(main_win, "conceallevel", 0)
+  vim.api.nvim_set_option_value("wrap", true, { win = main_win })
+  vim.api.nvim_set_option_value("conceallevel", 0, { win = main_win })
 
   local sidebar_win = vim.api.nvim_open_win(sidebar_buf, false, {
     relative = "win",
@@ -4086,9 +4082,9 @@ function Popup.render(issue, config, context)
     zindex = 60,
   })
   track_win(sidebar_win)
-  vim.api.nvim_win_set_option(sidebar_win, "wrap", true)
-  vim.api.nvim_win_set_option(sidebar_win, "conceallevel", 0)
-  vim.api.nvim_win_set_option(sidebar_win, "winhl", "Normal:JiraPopupDetailsBody,NormalNC:JiraPopupDetailsBody")
+  vim.api.nvim_set_option_value("wrap", true, { win = sidebar_win })
+  vim.api.nvim_set_option_value("conceallevel", 0, { win = sidebar_win })
+  vim.api.nvim_set_option_value("winhl", "Normal:JiraPopupDetailsBody,NormalNC:JiraPopupDetailsBody", { win = sidebar_win })
 
   local url_win = vim.api.nvim_open_win(url_buf, false, {
     relative = "win",
@@ -4102,9 +4098,9 @@ function Popup.render(issue, config, context)
     zindex = 60,
   })
   track_win(url_win)
-  vim.api.nvim_win_set_option(url_win, "wrap", true)
-  vim.api.nvim_win_set_option(url_win, "conceallevel", 0)
-  vim.api.nvim_win_set_option(url_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
+  vim.api.nvim_set_option_value("wrap", true, { win = url_win })
+  vim.api.nvim_set_option_value("conceallevel", 0, { win = url_win })
+  vim.api.nvim_set_option_value("winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar", { win = url_win })
 
   local help_win = vim.api.nvim_open_win(help_buf, false, {
     relative = "win",
@@ -4119,9 +4115,9 @@ function Popup.render(issue, config, context)
     focusable = false,
   })
   track_win(help_win)
-  vim.api.nvim_win_set_option(help_win, "wrap", true)
-  vim.api.nvim_win_set_option(help_win, "conceallevel", 0)
-  vim.api.nvim_win_set_option(help_win, "winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar")
+  vim.api.nvim_set_option_value("wrap", true, { win = help_win })
+  vim.api.nvim_set_option_value("conceallevel", 0, { win = help_win })
+  vim.api.nvim_set_option_value("winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar", { win = help_win })
 
     lock_window_size(summary_win)
     lock_window_size(main_win)

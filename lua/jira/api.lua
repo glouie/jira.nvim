@@ -5,21 +5,18 @@ local utils = require("jira.utils")
 
 local M = {}
 
+---Whether debug logging is enabled. Set via M.set_debug() from init.lua setup().
+local debug_enabled = false
+
 ---Resolve the absolute path for the API access log file.
+---Uses stdpath("cache") so logs never land in the plugin source tree.
 ---@return string path Filesystem path used for API request/response logs.
 local function resolve_log_path()
-  local info = debug.getinfo(1, "S")
-  if info and info.source and info.source:sub(1, 1) == "@" then
-    local script = info.source:sub(2)
-    if script and script ~= "" then
-      local root = vim.fn.fnamemodify(script, ":p:h:h:h")
-      if root ~= "" then
-        return root .. "/api_access.log"
-      end
-    end
+  local ok, cache_dir = pcall(vim.fn.stdpath, "cache")
+  if ok and cache_dir and cache_dir ~= "" then
+    return cache_dir .. "/jira.nvim/api_access.log"
   end
-  local fallback = vim.fn.stdpath("cache")
-  return fallback .. "/jira.nvim/api_access.log"
+  return "/tmp/jira.nvim_api_access.log"
 end
 
 ---Ensure the directory for the given log path exists.
@@ -33,21 +30,33 @@ local function ensure_log_directory(path)
 end
 
 local api_log_path = resolve_log_path()
-ensure_log_directory(api_log_path)
 
 ---Append a structured API access log entry to disk.
+---Only writes when debug_enabled is true (set via M.set_debug).
 ---@param event string Short event label such as "REQUEST" or "ERROR".
 ---@param details string|nil Additional text payload to log.
 ---@return nil
 local function log_api_access(event, details)
+  if not debug_enabled then
+    return
+  end
+  ensure_log_directory(api_log_path)
   local timestamp = os.date("%Y-%m-%d %H:%M:%S")
   local message = string.format("[%s] %s: %s\n", timestamp, event, details or "")
-  local ok, file = pcall(io.open, api_log_path, "a")
-  if not ok or not file then
+  local file = io.open(api_log_path, "a")
+  if not file then
     return
   end
   file:write(message)
   file:close()
+end
+
+---Enable or disable API access logging.
+---Called from init.lua's setup() with config.debug value.
+---@param flag boolean Whether to enable debug logging.
+---@return nil
+function M.set_debug(flag)
+  debug_enabled = flag == true
 end
 
 ---Strip sensitive fields from curl argument lists before logging.
@@ -104,6 +113,12 @@ local function run_command(args, callback)
         callback(nil, utils.trim(err))
         return
       end
+      local jira_err = extract_jira_error(obj.stdout)
+      if jira_err then
+        log_api_access("ERROR", jira_err)
+        callback(nil, jira_err)
+        return
+      end
       log_api_access("RESPONSE", obj.stdout or "")
       callback(obj.stdout, nil)
     end)
@@ -141,6 +156,12 @@ local function run_command(args, callback)
         return
       end
       local output = table.concat(stdout, "\n")
+      local jira_err = extract_jira_error(output)
+      if jira_err then
+        log_api_access("ERROR", jira_err)
+        callback(nil, jira_err)
+        return
+      end
       log_api_access("RESPONSE", output)
       callback(output, nil)
     end,
@@ -169,7 +190,8 @@ local function build_request_args(method, endpoint, auth_header, body)
   local args = {
     "curl",
     "-sS",
-    "-f",
+    "--max-time",
+    "30",
     "-X",
     method,
     "-H",
@@ -185,6 +207,42 @@ local function build_request_args(method, endpoint, auth_header, body)
   end
   table.insert(args, endpoint)
   return args
+end
+
+---Extract Jira's own error text from a response body, if present.
+---Jira returns {"errorMessages":["..."],"errors":{...}} on 4xx failures.
+---@param body string Raw response body from curl.
+---@return string|nil err Human-readable error or nil when body is not a Jira error.
+local function extract_jira_error(body)
+  if not body or body == "" then
+    return nil
+  end
+  local ok, decoded = pcall(vim.json.decode, body)
+  if not ok or type(decoded) ~= "table" then
+    return nil
+  end
+  local messages = {}
+  if type(decoded.errorMessages) == "table" then
+    for _, msg in ipairs(decoded.errorMessages) do
+      if type(msg) == "string" and msg ~= "" then
+        table.insert(messages, msg)
+      end
+    end
+  end
+  if type(decoded.errors) == "table" then
+    for field, msg in pairs(decoded.errors) do
+      if type(msg) == "string" and msg ~= "" then
+        table.insert(messages, string.format("%s: %s", field, msg))
+      end
+    end
+  end
+  if type(decoded.message) == "string" and decoded.message ~= "" then
+    table.insert(messages, decoded.message)
+  end
+  if #messages > 0 then
+    return table.concat(messages, "; ")
+  end
+  return nil
 end
 
 ---Build curl arguments for a GET request.
@@ -484,7 +542,7 @@ function M.fetch_issue(issue_key, config, callback)
   end
 
   local endpoint =
-      string.format("%s/rest/api/3/issue/%s?expand=renderedFields,changelog,names,comment", base_url, issue_key)
+      string.format("%s/rest/api/3/issue/%s?expand=renderedFields,changelog,names,comment", base_url, utils.url_encode(issue_key))
   local args = build_get_args(endpoint, auth)
 
   run_command(args, function(payload, err)
@@ -539,7 +597,7 @@ function M.fetch_issue_summary(issue_key, config, callback)
   end
 
   local endpoint =
-      string.format("%s/rest/api/3/issue/%s?fields=summary,status,resolution,assignee,reporter", base_url, issue_key)
+      string.format("%s/rest/api/3/issue/%s?fields=summary,status,resolution,assignee,reporter", base_url, utils.url_encode(issue_key))
   local args = build_get_args(endpoint, auth)
 
   run_command(args, function(payload, err)

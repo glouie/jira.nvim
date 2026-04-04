@@ -3,13 +3,13 @@ if exists("g:loaded_jira_nvim")
 endif
 let g:loaded_jira_nvim = 1
 
-lua << JIRANVIM
-local ok, jira = pcall(require, "jira")
-if not ok then
-  return
-end
-local setup = jira and jira.setup
-if type(setup) == "function" then
-  setup()
-end
-JIRANVIM
+command! -nargs=? JiraOpenIssue   lua require("jira").open_issue(<q-args> ~= "" and <q-args> or nil)
+command! -nargs=0 JiraOpenCursor  lua require("jira").open_issue_under_cursor()
+command! -nargs=0 JiraSearch      lua require("jira").open_jql_search()
+command! -nargs=0 JiraAssigned    lua require("jira").open_assigned_issues()
+command! -nargs=0 JiraCreated     lua require("jira").open_created_issues()
+command! -nargs=0 JiraRecent      lua require("jira").open_recent_issues()
+command! -nargs=0 JiraHistory     lua require("jira").open_issue_history()
+command! -nargs=0 JiraFilter      lua require("jira").open_filter_search()
+command! -nargs=0 JiraFilters     lua require("jira").open_filter_list()
+command! -nargs=0 JiraBuffer      lua require("jira").open_buffer_issue_list()

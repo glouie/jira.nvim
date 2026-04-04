@@ -263,8 +263,8 @@ local function set_help(state, text)
       " %*",
     })
   end
-  vim.api.nvim_win_set_option(state.win, "winbar", winbar)
-  vim.api.nvim_win_set_option(state.win, "statusline", "")
+  vim.api.nvim_set_option_value("winbar", winbar, { win = state.win })
+  vim.api.nvim_set_option_value("statusline", "", { win = state.win })
 end
 
 ---Compute dimensions for the prompt windows based on editor size and defaults.
@@ -742,7 +742,7 @@ local function maybe_suggest_field_values(state, line)
     return
   end
   if not state.suggestion_timer then
-    state.suggestion_timer = vim.loop.new_timer()
+    state.suggestion_timer = (vim.uv or vim.loop).new_timer()
   end
   local timer = state.suggestion_timer
   if not timer then
@@ -1309,18 +1309,10 @@ function JQLPrompt.open(opts)
     close_prompt({ win = container_win, buf = container_buf })
     return false
   end
-  vim.api.nvim_win_set_option(history_win, "wrap", false)
-  vim.api.nvim_win_set_option(
-    history_win,
-    "winhl",
-    "Normal:JiraPopupDetailsBody,NormalNC:JiraPopupDetailsBody"
-  )
-  vim.api.nvim_win_set_option(win, "wrap", true)
-  vim.api.nvim_win_set_option(
-    win,
-    "winhl",
-    "Normal:JiraPopupDetailsBody,FloatBorder:JiraPopupDetailsHeader"
-  )
+  vim.api.nvim_set_option_value("wrap", false, { win = history_win })
+  vim.api.nvim_set_option_value("winhl", "Normal:JiraPopupDetailsBody,NormalNC:JiraPopupDetailsBody", { win = history_win })
+  vim.api.nvim_set_option_value("wrap", true, { win = win })
+  vim.api.nvim_set_option_value("winhl", "Normal:JiraPopupDetailsBody,FloatBorder:JiraPopupDetailsHeader", { win = win })
 
   local bar_buf = vim.api.nvim_create_buf(false, true)
   vim.bo[bar_buf].bufhidden = "wipe"
@@ -1339,20 +1331,16 @@ function JQLPrompt.open(opts)
     border = "none",
     focusable = false,
   })
-  vim.api.nvim_win_set_option(
-    bar_win,
-    "winhl",
-    "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar"
-  )
-  vim.api.nvim_win_set_option(bar_win, "wrap", true)
-  pcall(vim.api.nvim_win_set_option, container_win, "winfixheight", true)
-  pcall(vim.api.nvim_win_set_option, container_win, "winfixwidth", true)
-  pcall(vim.api.nvim_win_set_option, history_win, "winfixheight", true)
-  pcall(vim.api.nvim_win_set_option, history_win, "winfixwidth", true)
-  pcall(vim.api.nvim_win_set_option, win, "winfixheight", true)
-  pcall(vim.api.nvim_win_set_option, win, "winfixwidth", true)
-  pcall(vim.api.nvim_win_set_option, bar_win, "winfixheight", true)
-  pcall(vim.api.nvim_win_set_option, bar_win, "winfixwidth", true)
+  vim.api.nvim_set_option_value("winhl", "Normal:JiraPopupUrlBar,NormalNC:JiraPopupUrlBar", { win = bar_win })
+  vim.api.nvim_set_option_value("wrap", true, { win = bar_win })
+  pcall(vim.api.nvim_set_option_value, "winfixheight", true, { win = container_win })
+  pcall(vim.api.nvim_set_option_value, "winfixwidth", true, { win = container_win })
+  pcall(vim.api.nvim_set_option_value, "winfixheight", true, { win = history_win })
+  pcall(vim.api.nvim_set_option_value, "winfixwidth", true, { win = history_win })
+  pcall(vim.api.nvim_set_option_value, "winfixheight", true, { win = win })
+  pcall(vim.api.nvim_set_option_value, "winfixwidth", true, { win = win })
+  pcall(vim.api.nvim_set_option_value, "winfixheight", true, { win = bar_win })
+  pcall(vim.api.nvim_set_option_value, "winfixwidth", true, { win = bar_win })
 
   local initial_lines = vim.split(default_value, "\n", { trimempty = false })
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, initial_lines)
