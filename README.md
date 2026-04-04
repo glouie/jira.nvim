@@ -1,276 +1,476 @@
 # jira.nvim
 
-A lightweight Neovim companion for browsing Atlassian JIRA issues without
-leaving the editor. jira.nvim scans the current buffer for strings that
-resemble issue keys (for example `SPL-12345` or `CINC-54`), underlines
-them, and lets you inspect the full issue details directly in a floating
-popup.
+Browse Jira issues without leaving Neovim.
+
+jira.nvim highlights issue keys in your buffers, fetches summaries on hover, and
+provides floating popups for searching, navigating, and inspecting issues — all
+driven by the Jira REST API over plain `curl`.
+
+---
 
 ## Features
 
-- Automatically underlines issue keys that match `%u+-%d+`.
-- Opens a floating popup with the issue summary, description, and recent
-  activity.
-- Sidebar highlights important metadata like status, priority, resolution,
-  and assignee.
-- When your cursor rests on an issue key, the command area (below your
-  statusline) shows `<KEY>: <issue summary>`. The hover text sticks around
-  until you move the cursor to another issue key or leave the window. You can
-  opt into statusline/lualine placement instead.
-- Press `o` inside the popup to jump to the issue in your browser, or
-  `Esc`/`q` to close it.
-- Popups support `/` search, `n`/`N` to repeat, `Tab`/`<S-Tab>` to swap
-  panes, and `<C-n>`/`<C-p>` to hop between other issue matches in the
-  buffer without leaving the view.
-- `<leader>jb` opens a fzf-style list of issue keys in the current buffer with
-  line context so you can jump straight into their details.
-- `<leader>ja` shows a quick table of unresolved issues assigned to you so
-  you can jump straight into the one you care about.
-- `<leader>jc` shows unresolved issues created by you.
-- `<leader>jr` shows issues you recently viewed.
-- `<leader>js` opens a highlighted JQL prompt with inline help and
-  server-backed suggestions, then displays the matching issues with paging
-  controls and totals.
-- `<leader>jf` opens a filter-id prompt, loads the filter's JQL, and shows
-  matching issues with a live details preview pane.
-- `<leader>jj` opens a list of your saved filters (favorites first) and lets
-  you jump straight into a filter's results.
-- `<leader>jh` opens a persisted list of issues you've viewed, deduped and
-  ready to reopen with `<CR>`.
-- Uses your Atlassian Cloud API token, sourced from environment variables,
-  so credentials never touch the repo.
+- **Hover preview** — when your cursor rests on an issue key (e.g. `ABC-123`),
+  the issue summary is shown in the statusline, as a lualine component, or in
+  the echo area.
+- **Floating issue popup** — open a detailed view of any issue with a full
+  details pane; navigate forward and backward through issues without closing the
+  popup.
+- **JQL search with history** — enter any JQL query from a prompt; previous
+  queries are saved and offered as a selectable history list.
+- **Assigned issues list** — one keymap to see all unresolved issues currently
+  assigned to you.
+- **Created issues list** — browse issues you reported.
+- **Recently-viewed issues list** — server-side recency pulled from Jira's own
+  activity log.
+- **Filter search by ID** — open issues returned by a saved Jira filter using
+  its numeric ID; filter IDs are remembered in a local history.
+- **Saved-filters browser** — list and select from all of your saved Jira
+  filters by name.
+- **Local issue history popup** — a client-side log of every issue you have
+  opened in jira.nvim, separate from Jira's server-side recency, persisted
+  between sessions.
+- **Buffer issue list** — list every issue key found in the current buffer and
+  open any of them without leaving the window.
+- **`:checkhealth jira`** — built-in health check that verifies Neovim version,
+  `curl` availability, API credentials, and optional lualine integration.
+
+---
+
+## Requirements
+
+| Requirement | Notes |
+|---|---|
+| Neovim >= 0.10 | `vim.system` is used for async HTTP requests |
+| `curl` in `PATH` | All API calls are made via `curl` |
+| Jira API email | The email address of your Atlassian account |
+| Jira API token | Generated from your Atlassian account settings |
+
+**Generating an API token**
+
+1. Go to <https://id.atlassian.com/manage-profile/security/api-tokens>.
+2. Click **Create API token**, give it a label, and copy the value immediately
+   (it is not shown again).
+3. Export it in your shell profile as `JIRA_API_TOKEN` (see Configuration).
+
+---
 
 ## Installation
 
-Use your favourite plugin manager. Example with
-[`lazy.nvim`](https://github.com/folke/lazy.nvim):
+### lazy.nvim
+
+Minimal setup — credentials from environment variables:
 
 ```lua
 {
   "glouie/jira.nvim",
+  event = "VeryLazy",
   opts = {
-    keymap = "<leader>ji",
-    popup = {
-      width = 0.6,
-      height = 0.7,
+    api = {
+      base_url = os.getenv("JIRA_BASE_URL") or "",
+      email    = os.getenv("JIRA_API_EMAIL") or "",
+      token    = os.getenv("JIRA_API_TOKEN") or "",
     },
   },
 }
 ```
 
-## Configuration
+Full configuration (see all options in the [Configuration](#configuration) section):
 
-jira.nvim reads your credentials from environment variables by default:
+```lua
+{
+  "glouie/jira.nvim",
+  event = "VeryLazy",
+  config = function()
+    require("jira").setup({
+      keymap           = "<leader>ji",
+      debug            = false,
+      issue_pattern    = "%u+-%d+",
+      highlight_group  = "JiraIssue",
+      max_lines        = -1,
+      ignored_projects = { "SEV" },
+      statusline = {
+        enabled      = true,
+        output       = "lualine",
+        max_length   = 80,
+        loading_text = "Loading...",
+        error_text   = "Unable to load issue",
+        empty_text   = "No summary",
+      },
+      api = {
+        base_url = os.getenv("JIRA_BASE_URL") or "",
+        email    = os.getenv("JIRA_API_EMAIL") or "",
+        token    = os.getenv("JIRA_API_TOKEN") or "",
+      },
+    })
+  end,
+}
+```
 
-- `JIRA_BASE_URL` (e.g. `https://your-domain.atlassian.net`)
-- `JIRA_API_EMAIL` (the Atlassian account email)
-- `JIRA_API_TOKEN` (or `JIRA_API_KEY`) – create one at
-  <https://id.atlassian.com/manage-profile/security/api-tokens>
+### packer.nvim
 
-You can override any of these (plus visual behaviour) via
-`require("jira").setup({ ... })`. Available options:
+```lua
+use {
+  "glouie/jira.nvim",
+  config = function()
+    require("jira").setup({
+      api = {
+        base_url = os.getenv("JIRA_BASE_URL") or "",
+        email    = os.getenv("JIRA_API_EMAIL") or "",
+        token    = os.getenv("JIRA_API_TOKEN") or "",
+      },
+    })
+  end,
+}
+```
+
+### vim-plug
+
+```vim
+Plug 'glouie/jira.nvim'
+```
+
+Then in your `init.lua` (or inside a `lua` heredoc in `init.vim`):
 
 ```lua
 require("jira").setup({
-  keymap = "<leader>ji",
-  -- key used to open the popup for the issue under the cursor
-  debug = false,
-  -- set true to log when the cursor lands on an issue key
-  issue_pattern = "%u+-%d+",
-  -- Lua pattern for matching issue keys
-  highlight_group = "JiraIssue",
-  -- highlight used to underline matches
-  max_lines = -1,
-  -- number of lines to scan for issue keys (-1 scans the whole buffer)
-  ignored_projects = { "SEV" },
-  -- project keys to skip when scanning for issue matches
-  statusline = {
-    enabled = true,
-    -- set to false to leave your statusline untouched
-    output = "message",
-    -- "message" shows in the command area; use "statusline" or "lualine" to embed it there
-    max_length = 80,
-    -- truncate long summaries to avoid crowding the bar (0 means no limit)
-    loading_text = "Loading...",
-    -- shown while jira.nvim fetches the summary
-    error_text = "Unable to load issue",
-    -- shown when the summary request fails
-    empty_text = "No summary",
-    -- fallback when an issue has a blank summary
-    message_highlight = nil,
-    -- highlight group used when output = "message" (for color/bold/italic)
-  },
-  assigned_popup = {
-    keymap = "<leader>ja",
-    -- opens the assigned-issues list popup
-    width = 0.55,
-    height = 0.5,
-    max_results = 50,
-  },
-  created_popup = {
-    keymap = "<leader>jc",
-    -- opens the created-by-me list popup
-    width = 0.55,
-    height = 0.5,
-    max_results = 50,
-  },
-  recent_popup = {
-    keymap = "<leader>jr",
-    -- opens the recently-viewed list popup
-    width = 0.55,
-    height = 0.5,
-    max_results = 50,
-  },
-  search_popup = {
-    keymap = "<leader>js",
-    -- prompts for JQL and shows the result list
-    width = 0.6,
-    height = 0.6,
-    max_results = 50,
-    history_size = 50,
-    -- how many past searches to show in the prompt sidebar
-  },
-  filter_popup = {
-    keymap = "<leader>jf",
-    -- prompts for a Jira filter id and shows the result list
-    width = 0.6,
-    height = 0.6,
-    max_results = 50,
-    history_size = 50,
-    -- how many past filters to show in the prompt sidebar
-  },
-  filter_list_popup = {
-    keymap = "<leader>jj",
-    -- lists saved filters (favorites first)
-    width = 0.6,
-    height = 0.6,
-    max_results = 100,
-  },
-  history_popup = {
-    keymap = "<leader>jh",
-    -- opens the recently-viewed issues table
-    width = 0.55,
-    height = 0.5,
-    history_size = 200,
-    -- how many unique issues to keep (oldest drop off)
-  },
-  buffer_popup = {
-    keymap = "<leader>jb",
-    -- lists all detected issue keys in the current buffer
-    width = 0.55,
-    height = 0.5,
-    border = "rounded",
-    close_on_select = false,
-    -- keep the picker open so closing an issue returns to it
-  },
-  popup = {
-    width = 0.6,
-    height = 0.7,
-    border = "rounded",
-    details_fields = { "key", "status", "priority", "assignee", "reporter", "labels" },
-    -- choose which fields render in the Details sidebar and their order
-  },
   api = {
-    base_url = os.getenv("JIRA_BASE_URL"),
-    email = os.getenv("JIRA_API_EMAIL"),
-    token = os.getenv("JIRA_API_TOKEN")
-      or os.getenv("JIRA_API_KEY"),
+    base_url = os.getenv("JIRA_BASE_URL") or "",
+    email    = os.getenv("JIRA_API_EMAIL") or "",
+    token    = os.getenv("JIRA_API_TOKEN") or "",
   },
 })
 ```
-Set `ignored_projects` to a list of project prefixes (defaults to `{ "SEV" }`)
-when you need to avoid false positives such as severity labels that resemble
-issue keys. JQL search history is stored at
-`stdpath("data")/jira.nvim/search_history.json` and respects `history_size`
-(set it to `0` to skip saving and showing history). Filter history lives beside
-it in `filter_history.json` and stores the filter id + name (set
-`filter_popup.history_size` to `0` to disable it). Viewed issue history lives
-in `issue_history.json` and is deduplicated by key; set
-`history_popup.history_size` to `0` to disable it. Use `max_lines` to cap how
-many lines in the current buffer are scanned for issue keys when you only want
-to underline the top of very large files. Customize `assigned_popup` to tweak
-the keybinding, size, or number of issues returned by the "assigned to me"
-list, `created_popup` for created-by-me lists, `recent_popup` for recently
-viewed lists, `search_popup` for the JQL prompt/table layout, `filter_popup` for
-the filter prompt/table layout, `filter_list_popup` for the saved filters list,
-and `buffer_popup` to control the in-buffer picker (size, border, and whether
-it closes after selection). Issue tables show the total result count, the range
-currently visible, and let you move between rows with `j`/`k` (or `<S-N>/<S-P>`),
-page with `<C-f>/<C-b>`, and hit `<CR>` to open the selected issue without
-dismissing the list.
 
-The Details sidebar rows follow `popup.details_fields`, which accepts a list to
-set both the fields and their order (defaults keep labels at the bottom). Use it
-to hide entries you do not care about or to elevate the ones you check often.
+---
 
-Hovering over an issue key triggers a lightweight summary fetch and surfaces
-`<KEY>: <summary>` in the command area by default (under your statusline).
-Set `statusline.output = "statusline"` to use the built-in statusline layout,
-or `statusline.output = "lualine"` to feed the built-in lualine component
-without touching `vim.o.statusline`. If you already manage your own
-statusline layout, keep `statusline.enabled = false` and embed
-`%{v:lua.require('jira').statusline_message()}` (or add
-`require("jira").lualine_component` to your lualine config) wherever you want
-the Jira hover text to appear. Setting `statusline = false` behaves the same
-as `statusline.enabled = false` while still keeping the hover text available
-for manual placement. When `output = "message"`, set `statusline.message_highlight`
-to a highlight group name if you want colored/bold/italic hover text in the
-command area.
+## Configuration
 
-Example lualine component:
+All keys are optional. Values shown are the defaults.
+
+```lua
+require("jira").setup({
+
+  -- Keymap to open the issue detail popup for the key under the cursor.
+  keymap = "<leader>ji",
+
+  -- Write API request/response logs to
+  -- ~/.cache/nvim/jira.nvim/api_access.log when true.
+  debug = false,
+
+  -- Lua pattern used to identify issue keys in buffer text.
+  issue_pattern = "%u+-%d+",
+
+  -- Highlight group applied to matched issue keys.
+  highlight_group = "JiraIssue",
+
+  -- Maximum number of buffer lines scanned for issue keys. -1 = unlimited.
+  max_lines = -1,
+
+  -- Project prefixes that are never treated as issue keys.
+  ignored_projects = { "SEV" },
+
+  -- Controls how the hover summary is displayed.
+  statusline = {
+    enabled           = true,
+    -- Output mode: "message" | "statusline" | "lualine"
+    output            = "message",
+    -- Maximum display width of the summary (0 = no limit).
+    max_length        = 80,
+    loading_text      = "Loading...",
+    error_text        = "Unable to load issue",
+    empty_text        = "No summary",
+    -- Optional highlight group for message-mode output (color/bold/italic).
+    message_highlight = nil,
+  },
+
+  -- Issue detail popup (opened by keymap or :JiraOpenIssue).
+  popup = {
+    width  = 0.65,   -- fraction of editor width
+    height = 0.75,   -- fraction of editor height
+    border = "rounded",
+    -- Fields rendered in the details pane, in order.
+    -- Remove entries you don't need or reorder to surface what matters most.
+    details_fields = {
+      "key", "status", "resolution", "priority", "severity",
+      "assignee", "reporter", "created", "updated", "due",
+      "fix_versions", "affects_versions", "open_duration",
+      "comments", "changes", "assignees", "labels",
+    },
+  },
+
+  -- Popup listing unresolved issues assigned to the current user.
+  assigned_popup = {
+    keymap      = "<leader>ja",
+    width       = 0.55,
+    height      = 0.5,
+    border      = "rounded",
+    max_results = 50,
+    -- Optional: override the JQL used to fetch assigned issues.
+    -- jql = "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC",
+  },
+
+  -- Popup listing issues created/reported by the current user.
+  created_popup = {
+    keymap      = "<leader>jc",
+    width       = 0.55,
+    height      = 0.5,
+    border      = "rounded",
+    max_results = 50,
+  },
+
+  -- Popup listing recently-viewed issues (Jira server-side activity).
+  recent_popup = {
+    keymap      = "<leader>jr",
+    width       = 0.55,
+    height      = 0.5,
+    border      = "rounded",
+    max_results = 50,
+  },
+
+  -- Popup with a JQL search prompt and saved query history.
+  search_popup = {
+    keymap       = "<leader>js",
+    width        = 0.6,
+    height       = 0.6,
+    border       = "rounded",
+    max_results  = 50,
+    history_size = 50,  -- number of past queries to retain on disk
+  },
+
+  -- Popup for opening issues via a saved Jira filter ID.
+  filter_popup = {
+    keymap       = "<leader>jf",
+    width        = 0.6,
+    height       = 0.6,
+    border       = "rounded",
+    max_results  = 50,
+    history_size = 50,  -- number of past filter IDs to retain on disk
+  },
+
+  -- Popup that lists your saved Jira filters by name.
+  filter_list_popup = {
+    keymap      = "<leader>jj",
+    width       = 0.6,
+    height      = 0.6,
+    border      = "rounded",
+    max_results = 100,
+  },
+
+  -- Popup showing locally-tracked issue open history (client-side log).
+  history_popup = {
+    keymap       = "<leader>jh",
+    width        = 0.55,
+    height       = 0.5,
+    border       = "rounded",
+    history_size = 200,  -- max entries kept on disk; oldest drop off
+  },
+
+  -- Popup listing every issue key found in the current buffer.
+  buffer_popup = {
+    keymap          = "<leader>jb",
+    width           = 0.55,
+    height          = 0.5,
+    border          = "rounded",
+    close_on_select = false,  -- keep list open after opening an issue
+  },
+
+  -- Jira API credentials.
+  -- Prefer environment variables; never commit tokens to version control.
+  api = {
+    base_url = os.getenv("JIRA_BASE_URL") or "",  -- https://your-domain.atlassian.net
+    email    = os.getenv("JIRA_API_EMAIL") or "",
+    token    = os.getenv("JIRA_API_TOKEN") or os.getenv("JIRA_API_KEY") or "",
+  },
+
+})
+```
+
+### Full option reference
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `keymap` | string | `"<leader>ji"` | Open detail popup for key under cursor |
+| `debug` | boolean | `false` | Enable API request/response logging |
+| `issue_pattern` | string | `"%u+-%d+"` | Lua pattern for matching issue keys |
+| `highlight_group` | string | `"JiraIssue"` | Highlight group applied to matched keys |
+| `max_lines` | integer | `-1` | Lines scanned per buffer; `-1` = all |
+| `ignored_projects` | string[] | `{ "SEV" }` | Project prefixes excluded from scanning |
+| `statusline.enabled` | boolean | `true` | Enable hover summary display |
+| `statusline.output` | string | `"message"` | `"message"`, `"statusline"`, or `"lualine"` |
+| `statusline.max_length` | integer | `80` | Max display width of the summary (0 = no limit) |
+| `statusline.loading_text` | string | `"Loading..."` | Shown while the API request is in flight |
+| `statusline.error_text` | string | `"Unable to load issue"` | Shown on API error |
+| `statusline.empty_text` | string | `"No summary"` | Shown when the issue has no summary field |
+| `statusline.message_highlight` | string\|nil | `nil` | Highlight group for message-mode output |
+| `popup.width` | number | `0.65` | Detail popup width as fraction of editor width |
+| `popup.height` | number | `0.75` | Detail popup height as fraction of editor height |
+| `popup.border` | string | `"rounded"` | Border style (any `nvim_open_win` value) |
+| `popup.details_fields` | string[] | *(see above)* | Fields shown in the details pane, in order |
+| `assigned_popup.keymap` | string | `"<leader>ja"` | Open assigned-issues list |
+| `assigned_popup.max_results` | integer | `50` | Max results fetched from the API |
+| `created_popup.keymap` | string | `"<leader>jc"` | Open created-issues list |
+| `created_popup.max_results` | integer | `50` | Max results fetched from the API |
+| `recent_popup.keymap` | string | `"<leader>jr"` | Open recently-viewed issues list |
+| `recent_popup.max_results` | integer | `50` | Max results fetched from the API |
+| `search_popup.keymap` | string | `"<leader>js"` | Open JQL search prompt |
+| `search_popup.max_results` | integer | `50` | Max results per query |
+| `search_popup.history_size` | integer | `50` | Saved query entries retained on disk |
+| `filter_popup.keymap` | string | `"<leader>jf"` | Open filter-by-ID prompt |
+| `filter_popup.max_results` | integer | `50` | Max results per filter |
+| `filter_popup.history_size` | integer | `50` | Saved filter ID entries retained on disk |
+| `filter_list_popup.keymap` | string | `"<leader>jj"` | Open saved-filters browser |
+| `filter_list_popup.max_results` | integer | `100` | Max filters fetched from the API |
+| `history_popup.keymap` | string | `"<leader>jh"` | Open local issue history |
+| `history_popup.history_size` | integer | `200` | Max entries kept in local history |
+| `buffer_popup.keymap` | string | `"<leader>jb"` | Open buffer issue list |
+| `buffer_popup.close_on_select` | boolean | `false` | Close list popup when an issue is opened |
+| `api.base_url` | string | `""` | Your Atlassian domain, e.g. `https://acme.atlassian.net` |
+| `api.email` | string | `""` | Atlassian account email |
+| `api.token` | string | `""` | API token (or `JIRA_API_KEY` legacy alias) |
+
+All popup tables also accept `width`, `height`, and `border` keys with the same
+meaning as `popup.width`, `popup.height`, and `popup.border`.
+
+### Environment variables
+
+Credentials can be supplied entirely via environment variables without touching
+the `api` table:
+
+| Variable | Maps to |
+|---|---|
+| `JIRA_BASE_URL` | `api.base_url` |
+| `JIRA_API_EMAIL` | `api.email` |
+| `JIRA_API_TOKEN` | `api.token` |
+| `JIRA_API_KEY` | `api.token` (legacy alias) |
+
+---
+
+## Default keymaps
+
+| Key | Action |
+|---|---|
+| `<leader>ji` | Open the issue detail popup for the key under the cursor |
+| `<leader>ja` | Open the assigned-issues list popup |
+| `<leader>jc` | Open the created-issues list popup |
+| `<leader>jr` | Open the recently-viewed issues list popup (server-side) |
+| `<leader>js` | Open the JQL search prompt popup |
+| `<leader>jf` | Open the filter-by-ID prompt popup |
+| `<leader>jj` | Open the saved-filters browser popup |
+| `<leader>jh` | Open the local issue history popup (client-side) |
+| `<leader>jb` | Open the buffer issue list popup |
+
+All keymaps are configurable via the `keymap` field of the corresponding popup
+table. Set a `keymap` field to `nil` or `""` to disable that binding.
+
+---
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `:JiraOpenIssue [KEY]` | Open the detail popup for KEY, or the key under the cursor when no argument is given |
+| `:JiraOpenCursor` | Open the detail popup for the issue key under the cursor |
+| `:JiraSearch` | Open the JQL search prompt popup |
+| `:JiraAssigned` | Open the assigned-issues list popup |
+| `:JiraCreated` | Open the created-issues list popup |
+| `:JiraRecent` | Open the recently-viewed issues list popup |
+| `:JiraHistory` | Open the local issue history popup |
+| `:JiraFilter` | Open the filter-by-ID prompt popup |
+| `:JiraFilters` | Open the saved-filters browser popup |
+| `:JiraBuffer` | Open the buffer issue list popup |
+
+---
+
+## Statusline integration
+
+jira.nvim supports three output modes controlled by `statusline.output`.
+
+### `"message"` (default)
+
+The issue summary is echoed to the command area using `vim.api.nvim_echo`. No
+statusline string is modified. This is the safest option and works with any
+statusline plugin.
+
+```lua
+statusline = { output = "message" }
+```
+
+### `"statusline"`
+
+jira.nvim takes ownership of `vim.o.statusline` and injects the hover summary
+into a custom layout string. The original value is saved and restored when the
+summary is cleared. Use this if you do not have a statusline plugin and want the
+summary in the bar itself.
+
+```lua
+statusline = { output = "statusline" }
+```
+
+You can also embed the summary manually in your own statusline string:
+
+```vim
+set statusline+=%{v:lua.require('jira').statusline_message()}
+```
+
+### `"lualine"`
+
+jira.nvim calls `lualine.refresh()` after updating the summary and exposes a
+component function you place anywhere in your lualine layout. lualine must be
+installed.
+
+```lua
+statusline = { output = "lualine" }
+```
+
+Add the component to your lualine configuration:
 
 ```lua
 require("lualine").setup({
   sections = {
     lualine_c = {
-      require("jira").lualine_component,
+      -- your other components,
+      {
+        function()
+          return require("jira").lualine_component()
+        end,
+        cond = function()
+          return require("jira").lualine_component() ~= ""
+        end,
+      },
     },
   },
 })
 ```
 
-## Usage
+`lualine_component()` returns the current hover summary as a plain string, or
+`""` when nothing is active.
 
-1. Make sure your env vars are exported before launching Neovim.
-2. Open any buffer that contains JIRA issue keys.
-3. The matches are underlined automatically. Place your cursor on one and
-   press the configured keymap (default `<leader>ji`).
-4. Inspect the popup. Use `j`/`k`, `gg`, or `G` to move around; `/` plus
-   `n`/`N` to search inside the popup; `Tab`/`<S-Tab>` to swap focus between
-   the main pane, sidebar, and URL bar; `<C-n>`/`<C-p>` to jump to the next or
-   previous issue match in the buffer; `o` to open the issue in a browser;
-   place the cursor on any URL and press `<CR>` or Cmd+click (macOS)/Ctrl+click
-   (Windows) to open it; `Esc` or `q` to close it.
-5. Press `<leader>jb` to list every issue key in the current buffer (with line
-   numbers) and open one with `<CR>`; closing the issue popup returns you to
-   the list. Press `<leader>ja` to see unresolved issues assigned to you,
-   `<leader>jc` for unresolved issues you created, `<leader>jr` for recently
-   viewed issues, `<leader>js` to enter a JQL query and page through the
-   matches, `<leader>jf` to enter a filter id and press `<CR>` to submit (errors
-   stay in the prompt so you can edit and resubmit), `<leader>jj` to browse your
-   saved filters (favorites first), or `<leader>jh` to reopen something you
-   viewed recently (history is deduped and persisted between sessions). Use
-   `j`/`k` (or `<S-N>/<S-P>`) to move through the list, `<CR>` to open an issue,
-   `<C-f>/<C-b>` to change pages, and `q`/`Esc` to close the popup(s).
+---
 
-Inside the JQL prompt, `Esc` drops you into Normal mode so you can
-edit/yank/clear text with your usual motions. The left sidebar lists your
-recent queries (latest at the bottom); browse it with `<C-n>/<C-p>`, preview
-entries in the input as you highlight them, press `<CR>` to load one without
-submitting, and press `<Tab>` in Normal mode to swap focus between the input
-and history pane (in Insert mode `<Tab>` still cancels a preview). Submit with
-`<CR>` in Normal mode or `<C-y>`, and when the completion menu is visible
-`<C-n>/<C-p>` still cycle suggestions. Exit with `<C-c>` (insert or normal) or
-`q` (normal).
+## Health check
 
-## Roadmap
+Run the built-in health check at any time:
 
-- Better formatting for rich text / description content.
-- Caching and offline support.
-- Inline commands for transitioning or commenting on issues.
+```vim
+:checkhealth jira
+```
+
+The health check covers:
+
+- **Neovim version** — confirms `vim.system` is available (>= 0.10); warns if
+  on 0.8–0.9 where a `vim.fn.jobstart` fallback is used; errors below 0.8.
+- **curl** — locates `curl` in `PATH` and reports its version string.
+- **Credentials** — verifies that `api.base_url`, `api.email`, and `api.token`
+  are all non-empty; warns if `base_url` uses `http://` instead of `https://`.
+- **lualine** (optional) — reports whether lualine is present for statusline
+  integration.
+
+If `setup()` has not been called yet, the check falls back to inspecting
+`JIRA_BASE_URL`, `JIRA_API_EMAIL`, and `JIRA_API_TOKEN` directly.
+
+---
 
 ## License
 
-Released under the [MIT License](LICENSE).
-
-PRs and suggestions are welcome!
+MIT
