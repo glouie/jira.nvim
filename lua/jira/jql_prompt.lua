@@ -749,27 +749,25 @@ local function maybe_suggest_field_values(state, line)
     return
   end
   timer:stop()
-  timer:start(
-    200,
-    0,
-    vim.schedule_wrap(function()
-      api.fetch_jql_suggestions(state.config, {
-        field = field,
-        value = prefix,
-      }, function(result, err)
-        vim.schedule(function()
-          if err then
-            local msg = string.format("jira.nvim: %s", err)
-            vim.notify(msg, vim.log.levels.WARN)
-            return
-          end
-          local suggestions = parse_suggestion_response(result)
-          state.cache[cache_key] = suggestions
-          apply_completions(state, prefix, suggestions)
-        end)
+  timer:start(200, 0, function()
+    -- Timer fires on the main loop; no schedule_wrap needed here.
+    api.fetch_jql_suggestions(state.config, {
+      field = field,
+      value = prefix,
+    }, function(result, err)
+      -- fetch_jql_suggestions callback is off the main loop; schedule back.
+      vim.schedule(function()
+        if err then
+          -- Silently drop completion errors — surfacing them via notify
+          -- while the user is typing is disruptive and not actionable.
+          return
+        end
+        local suggestions = parse_suggestion_response(result)
+        state.cache[cache_key] = suggestions
+        apply_completions(state, prefix, suggestions)
       end)
     end)
-  )
+  end)
 end
 
 ---Offer field name completions when typing a predicate.

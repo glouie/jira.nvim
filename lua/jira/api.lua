@@ -70,8 +70,17 @@ local function sanitize_args(args)
     if arg == "-H" then
       local header = args[i + 1]
       table.insert(sanitized, arg)
-      if type(header) == "string" and header:lower():find("^authorization:%s*basic") then
-        table.insert(sanitized, "Authorization: Basic [REDACTED]")
+      if type(header) == "string" then
+        local lower = header:lower()
+        if lower:find("^authorization:%s*basic") then
+          table.insert(sanitized, "Authorization: Basic [REDACTED]")
+        elseif lower:find("^authorization:%s*bearer") then
+          table.insert(sanitized, "Authorization: Bearer [REDACTED]")
+        elseif lower:find("^x%-api%-key:") then
+          table.insert(sanitized, "X-Api-Key: [REDACTED]")
+        else
+          table.insert(sanitized, header)
+        end
       elseif header ~= nil then
         table.insert(sanitized, header)
       end
@@ -178,6 +187,38 @@ local function normalize_base_url(url)
     return ""
   end
   return url:gsub("/*$", "")
+end
+
+---Resolve and validate base URL and auth header from api_config.
+---Centralises the credential resolution that was copy-pasted across every public function.
+---@param api_config table The config.api sub-table.
+---@param callback fun(nil, string) Error callback to invoke on failure (matches public API convention).
+---@return string|nil base_url Resolved URL, or nil when invalid (callback already invoked).
+---@return string|nil auth Base64 auth header, or nil when invalid (callback already invoked).
+local function resolve_credentials(api_config, callback)
+  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
+  if base_url == "" then
+    callback(
+      nil,
+      "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable."
+    )
+    return nil, nil
+  end
+  local auth, auth_err = utils.encode_basic_auth(
+    api_config.email or vim.env.JIRA_API_EMAIL,
+    api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY
+  )
+  if not auth then
+    callback(
+      nil,
+      string.format(
+        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
+        auth_err
+      )
+    )
+    return nil, nil
+  end
+  return base_url, auth
 end
 
 ---Construct the curl argument list for a Jira REST request.
@@ -517,29 +558,8 @@ end
 ---@return nil
 function M.fetch_issue(issue_key, config, callback)
   local api_config = config.api or {}
-  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
-  if base_url == "" then
-    callback(
-      nil,
-      "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable."
-    )
-    return
-  end
-
-  local auth, auth_err = utils.encode_basic_auth(
-    api_config.email or vim.env.JIRA_API_EMAIL,
-    api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY
-  )
-  if not auth then
-    callback(
-      nil,
-      string.format(
-        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
-        auth_err
-      )
-    )
-    return
-  end
+  local base_url, auth = resolve_credentials(api_config, callback)
+  if not base_url then return end
 
   local endpoint =
       string.format("%s/rest/api/3/issue/%s?expand=renderedFields,changelog,names,comment", base_url, utils.url_encode(issue_key))
@@ -572,29 +592,8 @@ end
 ---@return nil
 function M.fetch_issue_summary(issue_key, config, callback)
   local api_config = config.api or {}
-  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
-  if base_url == "" then
-    callback(
-      nil,
-      "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable."
-    )
-    return
-  end
-
-  local auth, auth_err = utils.encode_basic_auth(
-    api_config.email or vim.env.JIRA_API_EMAIL,
-    api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY
-  )
-  if not auth then
-    callback(
-      nil,
-      string.format(
-        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
-        auth_err
-      )
-    )
-    return
-  end
+  local base_url, auth = resolve_credentials(api_config, callback)
+  if not base_url then return end
 
   local endpoint =
       string.format("%s/rest/api/3/issue/%s?fields=summary,status,resolution,assignee,reporter", base_url, utils.url_encode(issue_key))
@@ -782,28 +781,8 @@ function M.fetch_assigned_issues(config, opts, callback)
   end
   opts = opts or {}
   local api_config = config.api or {}
-  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
-  if base_url == "" then
-    callback(
-      nil,
-      "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable."
-    )
-    return
-  end
-  local auth, auth_err = utils.encode_basic_auth(
-    api_config.email or vim.env.JIRA_API_EMAIL,
-    api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY
-  )
-  if not auth then
-    callback(
-      nil,
-      string.format(
-        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
-        auth_err
-      )
-    )
-    return
-  end
+  local base_url, auth = resolve_credentials(api_config, callback)
+  if not base_url then return end
 
   local endpoint_base = string.format("%s/rest/api/3/search/jql", base_url)
   local jql = assignment_jql(config)
@@ -869,31 +848,10 @@ function M.search_issues(config, params, callback)
     return
   end
   local api_config = config.api or {}
-  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
-  if base_url == "" then
-    callback(
-      nil,
-      "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable."
-    )
-    return
-  end
-  local auth, auth_err = utils.encode_basic_auth(
-    api_config.email or vim.env.JIRA_API_EMAIL,
-    api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY
-  )
-  if not auth then
-    callback(
-      nil,
-      string.format(
-        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
-        auth_err
-      )
-    )
-    return
-  end
+  local base_url, auth = resolve_credentials(api_config, callback)
+  if not base_url then return end
   local limit = clamp_page_size(params.max_results or (config.search_popup and config.search_popup.max_results) or 50)
   local fields = type(params.fields) == "table" and params.fields or { "key", "summary", "status" }
-  local fields_by_keys = params.fields_by_keys
   local expand = type(params.expand) == "table" and params.expand or nil
   local next_page_token = params.next_page_token or params.nextPageToken
   local start_at = math.max(0, tonumber(params.start_at) or 0)
@@ -927,9 +885,6 @@ function M.search_issues(config, params, callback)
     maxResults = limit,
     fields = fields,
   }
-  if fields_by_keys ~= nil then
-    payload.fieldsByKeys = fields_by_keys
-  end
   if expand and #expand > 0 then
     payload.expand = expand
   end
@@ -968,28 +923,8 @@ function M.fetch_filter(filter_id, config, callback)
     return
   end
   local api_config = config.api or {}
-  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
-  if base_url == "" then
-    callback(
-      nil,
-      "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable."
-    )
-    return
-  end
-  local auth, auth_err = utils.encode_basic_auth(
-    api_config.email or vim.env.JIRA_API_EMAIL,
-    api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY
-  )
-  if not auth then
-    callback(
-      nil,
-      string.format(
-        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
-        auth_err
-      )
-    )
-    return
-  end
+  local base_url, auth = resolve_credentials(api_config, callback)
+  if not base_url then return end
 
   local endpoint = string.format("%s/rest/api/3/filter/%s", base_url, utils.url_encode(id))
   run_command(build_get_args(endpoint, auth), function(body, err)
@@ -1023,28 +958,8 @@ end
 ---@return nil
 function M.fetch_current_user(config, callback)
   local api_config = config.api or {}
-  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
-  if base_url == "" then
-    callback(
-      nil,
-      "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable."
-    )
-    return
-  end
-  local auth, auth_err = utils.encode_basic_auth(
-    api_config.email or vim.env.JIRA_API_EMAIL,
-    api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY
-  )
-  if not auth then
-    callback(
-      nil,
-      string.format(
-        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
-        auth_err
-      )
-    )
-    return
-  end
+  local base_url, auth = resolve_credentials(api_config, callback)
+  if not base_url then return end
   local endpoint = string.format("%s/rest/api/3/myself", base_url)
   run_command(build_get_args(endpoint, auth), function(body, err)
     if err then
@@ -1075,28 +990,8 @@ function M.fetch_filters(config, opts, callback)
   end
   opts = opts or {}
   local api_config = config.api or {}
-  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
-  if base_url == "" then
-    callback(
-      nil,
-      "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable."
-    )
-    return
-  end
-  local auth, auth_err = utils.encode_basic_auth(
-    api_config.email or vim.env.JIRA_API_EMAIL,
-    api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY
-  )
-  if not auth then
-    callback(
-      nil,
-      string.format(
-        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
-        auth_err
-      )
-    )
-    return
-  end
+  local base_url, auth = resolve_credentials(api_config, callback)
+  if not base_url then return end
 
   local start_at = math.max(0, tonumber(opts.start_at) or 0)
   local max_results = clamp_page_size(opts.max_results or 100)
@@ -1212,28 +1107,8 @@ end
 ---@return nil
 function M.fetch_jql_autocomplete(config, callback)
   local api_config = config.api or {}
-  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
-  if base_url == "" then
-    callback(
-      nil,
-      "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable."
-    )
-    return
-  end
-  local auth, auth_err = utils.encode_basic_auth(
-    api_config.email or vim.env.JIRA_API_EMAIL,
-    api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY
-  )
-  if not auth then
-    callback(
-      nil,
-      string.format(
-        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
-        auth_err
-      )
-    )
-    return
-  end
+  local base_url, auth = resolve_credentials(api_config, callback)
+  if not base_url then return end
   local endpoint = string.format("%s/rest/api/3/jql/autocompletedata", base_url)
   run_command(build_get_args(endpoint, auth), function(body, err)
     if err then
@@ -1267,28 +1142,8 @@ function M.fetch_jql_suggestions(config, opts, callback)
     return
   end
   local api_config = config.api or {}
-  local base_url = normalize_base_url(api_config.base_url or vim.env.JIRA_BASE_URL or "")
-  if base_url == "" then
-    callback(
-      nil,
-      "Jira base URL is not configured. Set config.api.base_url or the JIRA_BASE_URL environment variable."
-    )
-    return
-  end
-  local auth, auth_err = utils.encode_basic_auth(
-    api_config.email or vim.env.JIRA_API_EMAIL,
-    api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY
-  )
-  if not auth then
-    callback(
-      nil,
-      string.format(
-        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
-        auth_err
-      )
-    )
-    return
-  end
+  local base_url, auth = resolve_credentials(api_config, callback)
+  if not base_url then return end
   local endpoint = string.format(
     "%s/rest/api/3/jql/autocompletedata/suggestions?fieldName=%s&fieldValue=%s",
     base_url,

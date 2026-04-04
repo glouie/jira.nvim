@@ -14,12 +14,12 @@ local function encode_base64(data)
   end
 
   return ((data:gsub(".", function(x)
-    local bits = ""
     local byte = x:byte()
+    local parts = {}
     for i = 8, 1, -1 do
-      bits = bits .. ((byte % 2 ^ i - byte % 2 ^ (i - 1) > 0) and "1" or "0")
+      parts[9 - i] = (byte % 2 ^ i - byte % 2 ^ (i - 1) > 0) and "1" or "0"
     end
-    return bits
+    return table.concat(parts)
   end) .. "0000"):gsub("%d%d%d?%d?%d?%d?", function(chunk)
     if #chunk < 6 then
       return ""
@@ -302,12 +302,7 @@ function utils.humanize_duration(seconds)
     end
   end
   if #parts == 0 then
-    local minutes = math.floor(remaining / 60)
-    if minutes > 0 then
-      table.insert(parts, string.format("%dm", minutes))
-    else
-      table.insert(parts, "Under 1m")
-    end
+    table.insert(parts, "Under 1m")
   end
   return table.concat(parts, " ")
 end
@@ -371,17 +366,33 @@ function utils.get_severity(issue)
   return nil
 end
 
----Replace nil or empty strings with a display placeholder.
+---Replace nil, vim.NIL, or empty strings with a display placeholder.
+---vim.NIL is the Lua representation of JSON null from vim.json.decode.
 ---@param value any Value to normalize.
 ---@return any normalized The value or "-" when blank.
 function utils.blank_if_nil(value)
-  if value == nil then
+  if value == nil or (vim.NIL ~= nil and value == vim.NIL) then
     return "-"
   end
   if type(value) == "string" and value == "" then
     return "-"
   end
   return value
+end
+
+---Determine whether an issue key belongs to an ignored project.
+---@param issue_key string|nil Issue key such as "ABC-123".
+---@param ignored_projects table|nil Map of uppercased project keys to true.
+---@return boolean ignore True when the issue belongs to an ignored project.
+function utils.should_ignore_issue_key(issue_key, ignored_projects)
+  if not issue_key or issue_key == "" or not ignored_projects then
+    return false
+  end
+  local project = issue_key:match("^([%a%d]+)%-%d+$")
+  if not project then
+    return false
+  end
+  return ignored_projects[project:upper()] == true
 end
 
 return utils

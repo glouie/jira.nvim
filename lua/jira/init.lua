@@ -5,31 +5,13 @@ local api = require("jira.api")
 local popup = require("jira.popup")
 local utils = require("jira.utils")
 local jql_prompt = require("jira.jql_prompt")
+local history = require("jira.history")
 
 local M = {}
 
----Deep copy a Lua value without relying on vim.deepcopy on older versions.
----@param value any Value to clone.
----@param seen table|nil Tracking table for circular references.
----@return any clone Copied value.
-local function deepcopy(value, seen)
-  if vim.deepcopy then
-    return vim.deepcopy(value)
-  end
-  if type(value) ~= "table" then
-    return value
-  end
-  if seen and seen[value] then
-    return seen[value]
-  end
-  local shadow = {}
-  seen = seen or {}
-  seen[value] = shadow
-  for k, v in pairs(value) do
-    shadow[deepcopy(k, seen)] = deepcopy(v, seen)
-  end
-  return shadow
-end
+-- vim.deepcopy is available since Neovim 0.8, which is the minimum required
+-- by this plugin (vim.system requires 0.10). No compat shim needed.
+local deepcopy = vim.deepcopy
 
 ---Check whether a highlight group exists.
 ---@param name string Highlight group name.
@@ -155,10 +137,13 @@ local default_config = {
       "labels",
     },
   },
+  -- api credentials are intentionally empty here.
+  -- They are resolved at setup() time so GUI launchers that set env vars
+  -- after Neovim starts (e.g. via direnv or shell init scripts) are picked up.
   api = {
-    base_url = vim.env.JIRA_BASE_URL or "",
-    email = vim.env.JIRA_API_EMAIL or "",
-    token = vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY or "",
+    base_url = "",
+    email = "",
+    token = "",
   },
 }
 
@@ -169,9 +154,6 @@ local navigation_state
 local move_navigation
 local last_jql_query
 local last_filter_query
-local search_history = {}
-local issue_history = {}
-local filter_history = {}
 local debug_state = {
   hover_issue = nil,
 }
@@ -184,436 +166,6 @@ local function debug_log(message)
     return
   end
   pcall(vim.notify, string.format("jira.nvim debug: %s", message), vim.log.levels.DEBUG)
-end
-
----Join filesystem path segments with a forward slash fallback.
----@param ... string Path segments.
----@return string path Joined path.
-local function join_path(...)
-  local parts = { ... }
-  if vim.fs and vim.fs.joinpath then
-    local unpack_fn = table.unpack or unpack
-    return vim.fs.joinpath(unpack_fn(parts))
-  end
-  local path = ""
-  for _, part in ipairs(parts) do
-    if part and part ~= "" then
-      if path ~= "" and not path:match("/$") then
-        path = path .. "/"
-      end
-      path = path .. part
-    end
-  end
-  return path
-end
-
----Resolve the on-disk path used to store JQL history.
----@return string|nil path Absolute file path or nil when stdpath is unavailable.
-local function history_store_path()
-  local ok, data_dir = pcall(vim.fn.stdpath, "data")
-  if not ok or not data_dir or data_dir == "" then
-    return nil
-  end
-  return join_path(data_dir, "jira.nvim", "search_history.json")
-end
-
----Resolve the on-disk path used to store opened issue history.
----@return string|nil path Absolute file path or nil when stdpath is unavailable.
-local function issue_history_store_path()
-  local ok, data_dir = pcall(vim.fn.stdpath, "data")
-  if not ok or not data_dir or data_dir == "" then
-    return nil
-  end
-  return join_path(data_dir, "jira.nvim", "issue_history.json")
-end
-
----Resolve the on-disk path used to store filter history.
----@return string|nil path Absolute file path or nil when stdpath is unavailable.
-local function filter_history_store_path()
-  local ok, data_dir = pcall(vim.fn.stdpath, "data")
-  if not ok or not data_dir or data_dir == "" then
-    return nil
-  end
-  return join_path(data_dir, "jira.nvim", "filter_history.json")
-end
-
----Return the configured history size limit for the JQL prompt.
----@return integer limit Maximum number of entries to keep.
-local function history_limit()
-  local limit = default_config.search_popup.history_size or 0
-  local configured = config.search_popup and config.search_popup.history_size
-  if configured ~= nil then
-    limit = configured
-  end
-  limit = tonumber(limit) or 0
-  if limit < 0 then
-    limit = 0
-  end
-  return math.floor(limit)
-end
-
----Return the configured history size limit for opened issues.
----@return integer limit Maximum number of entries to keep.
-local function issue_history_limit()
-  local limit = default_config.history_popup.history_size or 0
-  local configured = config.history_popup and config.history_popup.history_size
-  if configured ~= nil then
-    limit = configured
-  end
-  limit = tonumber(limit) or 0
-  if limit < 0 then
-    limit = 0
-  end
-  return math.floor(limit)
-end
-
----Return the configured history size limit for filters.
----@return integer limit Maximum number of entries to keep.
-local function filter_history_limit()
-  local limit = default_config.filter_popup.history_size or 0
-  local configured = config.filter_popup and config.filter_popup.history_size
-  if configured ~= nil then
-    limit = configured
-  end
-  limit = tonumber(limit) or 0
-  if limit < 0 then
-    limit = 0
-  end
-  return math.floor(limit)
-end
-
----Persist the current search history to disk.
----@return nil
-local function save_search_history()
-  local limit = history_limit()
-  if limit <= 0 then
-    return
-  end
-  local path = history_store_path()
-  if not path then
-    return
-  end
-  local dir = path:match("^(.*)/[^/]+$")
-  if dir and dir ~= "" then
-    pcall(vim.fn.mkdir, dir, "p")
-  end
-  local ok_encode, payload = pcall(utils.json_encode, search_history)
-  if not ok_encode or not payload then
-    return
-  end
-  local file = io.open(path, "w")
-  if not file then
-    return
-  end
-  file:write(payload)
-  file:close()
-end
-
----Persist the current issue history to disk.
----@return nil
-local function save_issue_history()
-  local limit = issue_history_limit()
-  if limit <= 0 then
-    return
-  end
-  local path = issue_history_store_path()
-  if not path then
-    return
-  end
-  local dir = path:match("^(.*)/[^/]+$")
-  if dir and dir ~= "" then
-    pcall(vim.fn.mkdir, dir, "p")
-  end
-  local ok_encode, payload = pcall(utils.json_encode, issue_history)
-  if not ok_encode or not payload then
-    return
-  end
-  local file = io.open(path, "w")
-  if not file then
-    return
-  end
-  file:write(payload)
-  file:close()
-end
-
----Persist the current filter history to disk.
----@return nil
-local function save_filter_history()
-  local limit = filter_history_limit()
-  if limit <= 0 then
-    return
-  end
-  local path = filter_history_store_path()
-  if not path then
-    return
-  end
-  local dir = path:match("^(.*)/[^/]+$")
-  if dir and dir ~= "" then
-    pcall(vim.fn.mkdir, dir, "p")
-  end
-  local ok_encode, payload = pcall(utils.json_encode, filter_history)
-  if not ok_encode or not payload then
-    return
-  end
-  local file = io.open(path, "w")
-  if not file then
-    return
-  end
-  file:write(payload)
-  file:close()
-end
-
----Trim stored JQL history to the configured limit.
----@param opts table|nil Additional options.
----@return nil
-local function trim_search_history(opts)
-  local limit = history_limit()
-  if limit <= 0 then
-    search_history = {}
-    if opts and opts.persist then
-      save_search_history()
-    end
-    return
-  end
-  while #search_history > limit do
-    table.remove(search_history, 1)
-  end
-  if opts and opts.persist then
-    save_search_history()
-  end
-end
-
----Trim stored opened-issue history to the configured limit.
----@param opts table|nil Additional options.
----@return nil
-local function trim_issue_history(opts)
-  local limit = issue_history_limit()
-  if limit <= 0 then
-    issue_history = {}
-    if opts and opts.persist then
-      save_issue_history()
-    end
-    return
-  end
-  while #issue_history > limit do
-    table.remove(issue_history, 1)
-  end
-  if opts and opts.persist then
-    save_issue_history()
-  end
-end
-
----Trim stored filter history to the configured limit.
----@param opts table|nil Additional options.
----@return nil
-local function trim_filter_history(opts)
-  local limit = filter_history_limit()
-  if limit <= 0 then
-    filter_history = {}
-    if opts and opts.persist then
-      save_filter_history()
-    end
-    return
-  end
-  while #filter_history > limit do
-    table.remove(filter_history, 1)
-  end
-  if opts and opts.persist then
-    save_filter_history()
-  end
-end
-
----Insert a search history entry, ensuring the most recent copy is kept.
----@param value string Cleaned JQL string.
----@return nil
-local function push_search_history(value)
-  if value == "" then
-    return
-  end
-  for idx = #search_history, 1, -1 do
-    if search_history[idx] == value then
-      table.remove(search_history, idx)
-    end
-  end
-  table.insert(search_history, value)
-end
-
----Insert an issue history entry, ensuring the most recent copy is kept.
----@param entry table Issue data containing `key` and optional `summary`.
----@return nil
-local function push_issue_history(entry)
-  if not entry or not entry.key or entry.key == "" then
-    return
-  end
-  for idx = #issue_history, 1, -1 do
-    if issue_history[idx] and issue_history[idx].key == entry.key then
-      table.remove(issue_history, idx)
-    end
-  end
-  entry.summary = utils.trim(entry.summary or "")
-  table.insert(issue_history, entry)
-end
-
----Insert a filter history entry, ensuring the most recent copy is kept.
----@param entry table Filter data containing `id` and `name`.
----@return nil
-local function push_filter_history(entry)
-  if not entry or not entry.id or entry.id == "" then
-    return
-  end
-  local id = tostring(entry.id)
-  local name = utils.trim(entry.name or "")
-  for idx = #filter_history, 1, -1 do
-    if filter_history[idx] and tostring(filter_history[idx].id) == id then
-      table.remove(filter_history, idx)
-    end
-  end
-  table.insert(filter_history, { id = id, name = name })
-end
-
----Load saved JQL history from disk.
----@return nil
-local function load_search_history()
-  search_history = {}
-  local path = history_store_path()
-  if not path then
-    return
-  end
-  local file = io.open(path, "r")
-  if not file then
-    return
-  end
-  local ok_read, contents = pcall(file.read, file, "*a")
-  file:close()
-  if not ok_read or not contents or contents == "" then
-    return
-  end
-  local decoded = utils.json_decode(contents)
-  if type(decoded) ~= "table" then
-    return
-  end
-  for _, entry in ipairs(decoded) do
-    if type(entry) == "string" then
-      local cleaned = utils.trim(entry)
-      if cleaned ~= "" then
-        push_search_history(cleaned)
-      end
-    end
-  end
-  trim_search_history({ persist = true })
-end
-
----Load saved issue history from disk.
----@return nil
-local function load_issue_history()
-  issue_history = {}
-  local path = issue_history_store_path()
-  if not path then
-    return
-  end
-  local file = io.open(path, "r")
-  if not file then
-    return
-  end
-  local ok_read, contents = pcall(file.read, file, "*a")
-  file:close()
-  if not ok_read or not contents or contents == "" then
-    return
-  end
-  local decoded = utils.json_decode(contents)
-  if type(decoded) ~= "table" then
-    return
-  end
-  for _, entry in ipairs(decoded) do
-    if type(entry) == "table" and type(entry.key) == "string" then
-      push_issue_history({
-        key = entry.key,
-        summary = utils.trim(entry.summary or ""),
-      })
-    elseif type(entry) == "string" then
-      push_issue_history({ key = entry, summary = "" })
-    end
-  end
-  trim_issue_history({ persist = true })
-end
-
----Load saved filter history from disk.
----@return nil
-local function load_filter_history()
-  filter_history = {}
-  local path = filter_history_store_path()
-  if not path then
-    return
-  end
-  local file = io.open(path, "r")
-  if not file then
-    return
-  end
-  local ok_read, contents = pcall(file.read, file, "*a")
-  file:close()
-  if not ok_read or not contents or contents == "" then
-    return
-  end
-  local decoded = utils.json_decode(contents)
-  if type(decoded) ~= "table" then
-    return
-  end
-  for _, entry in ipairs(decoded) do
-    if type(entry) == "table" and entry.id then
-      push_filter_history({
-        id = tostring(entry.id),
-        name = utils.trim(entry.name or ""),
-      })
-    elseif type(entry) == "string" then
-      local cleaned = utils.trim(entry)
-      if cleaned ~= "" then
-        push_filter_history({ id = cleaned, name = "" })
-      end
-    end
-  end
-  trim_filter_history({ persist = true })
-end
-
----Record a submitted JQL query in the history ring.
----@param query string|nil JQL text to store.
----@return nil
-local function record_search_history(query)
-  local cleaned = utils.trim(query or "")
-  if cleaned == "" then
-    return
-  end
-  push_search_history(cleaned)
-  trim_search_history({ persist = true })
-end
-
----Record a successfully opened issue in the history store.
----@param issue table|nil Jira issue payload containing `key` and fields.
----@return nil
-local function record_issue_history(issue)
-  if not issue or not issue.key or issue.key == "" then
-    return
-  end
-  local summary = ""
-  local fields = issue.fields
-  if type(fields) == "table" then
-    summary = utils.trim(fields.summary or fields.title or "")
-  end
-  push_issue_history({
-    key = issue.key,
-    summary = summary,
-  })
-  trim_issue_history({ persist = true })
-end
-
----Record a filter selection in history.
----@param filter table|nil Filter payload containing `id` and `name`.
----@return nil
-local function record_filter_history(filter)
-  if not filter or not filter.id then
-    return
-  end
-  push_filter_history({ id = tostring(filter.id), name = utils.trim(filter.name or "") })
-  trim_filter_history({ persist = true })
 end
 
 ---Rebuild a lookup map for ignored project keys from config.
@@ -634,18 +186,7 @@ rebuild_ignored_project_map()
 ---@param issue_key string|nil Issue key such as "ABC-123".
 ---@return boolean ignore True when the issue belongs to an ignored project.
 local function should_ignore_issue_key(issue_key)
-  if not issue_key or issue_key == "" then
-    return false
-  end
-  local project = issue_key:match("^([%a%d]+)%-%d+$")
-  if not project then
-    return false
-  end
-  local map = config._ignored_project_map
-  if not map then
-    return false
-  end
-  return map[project:upper()] == true
+  return utils.should_ignore_issue_key(issue_key, config._ignored_project_map)
 end
 
 ---Check whether lualine is available (loaded or loadable).
@@ -821,6 +362,7 @@ local function statusline_summary_from_history(issue_key)
   if not issue_key or issue_key == "" then
     return nil
   end
+  local issue_history = history.get_issue()
   for idx = #issue_history, 1, -1 do
     local entry = issue_history[idx]
     if entry and entry.key == issue_key and entry.summary and entry.summary ~= "" then
@@ -853,11 +395,19 @@ local function format_statusline_summary(summary, max_width)
     return suffix:sub(1, limit)
   end
   local target = limit - suffix_width
-  local shortened = text
-  while vim.api.nvim_strwidth(shortened) > target and vim.fn.strchars(shortened) > 0 do
-    shortened = vim.fn.strcharpart(shortened, 0, vim.fn.strchars(shortened) - 1)
+  -- Binary search for the largest char count whose display width fits target.
+  -- Avoids the O(n²) linear shrink loop for wide unicode strings.
+  local char_count = vim.fn.strchars(text)
+  local lo, hi = 0, char_count
+  while lo < hi do
+    local mid = math.floor((lo + hi + 1) / 2)
+    if vim.api.nvim_strwidth(vim.fn.strcharpart(text, 0, mid)) <= target then
+      lo = mid
+    else
+      hi = mid - 1
+    end
   end
-  return shortened .. suffix
+  return vim.fn.strcharpart(text, 0, lo) .. suffix
 end
 
 ---Build the statusline text for a given issue key and summary.
@@ -1010,6 +560,18 @@ local function update_hover_statusline(opts)
           set_statusline_message(format_statusline_text(issue_key, statusline_config_value("error_text")))
         end
         return
+      end
+      -- Evict oldest entry when cache exceeds 200 keys to prevent unbounded growth.
+      local cache_limit = 200
+      if not statusline_state._cache_keys then
+        statusline_state._cache_keys = {}
+      end
+      if #statusline_state._cache_keys >= cache_limit then
+        local oldest = table.remove(statusline_state._cache_keys, 1)
+        statusline_state.cache[oldest] = nil
+      end
+      if not statusline_state.cache[issue_key] then
+        table.insert(statusline_state._cache_keys, issue_key)
       end
       statusline_state.cache[issue_key] = {
         summary = utils.trim(issue and issue.summary or ""),
@@ -1384,8 +946,16 @@ function M.setup(opts)
     statusline_opts = { enabled = false }
   end
   config = vim.tbl_deep_extend("force", deepcopy(default_config), opts)
-  config.api = vim.tbl_deep_extend("force", deepcopy(default_config.api), opts.api or {})
+  -- Resolve env vars at setup() time so GUI launchers that set them after
+  -- Neovim starts are picked up. User opts take priority over env vars.
+  local api_opts = opts.api or {}
+  config.api = {
+    base_url = api_opts.base_url or vim.env.JIRA_BASE_URL or "",
+    email    = api_opts.email    or vim.env.JIRA_API_EMAIL  or "",
+    token    = api_opts.token    or vim.env.JIRA_API_TOKEN  or vim.env.JIRA_API_KEY or "",
+  }
   api.set_debug(config.debug)
+  history.setup(config)
   config.popup = vim.tbl_deep_extend("force", deepcopy(default_config.popup), opts.popup or {})
   config.assigned_popup = vim.tbl_deep_extend("force", deepcopy(default_config.assigned_popup), opts.assigned_popup or {})
   config.created_popup = vim.tbl_deep_extend("force", deepcopy(default_config.created_popup), opts.created_popup or {})
@@ -1403,6 +973,7 @@ function M.setup(opts)
     vim.o.statusline = statusline_state.original
   end
   statusline_state.cache = {}
+  statusline_state._cache_keys = {}
   statusline_state.pending = {}
   statusline_state.current_key = nil
   statusline_state.message = ""
@@ -1414,67 +985,63 @@ function M.setup(opts)
     hover_debounce_timer = nil
   end
   debug_state.hover_issue = nil
-  load_search_history()
-  load_issue_history()
-  load_filter_history()
-  trim_search_history({ persist = true })
-  trim_issue_history({ persist = true })
-  trim_filter_history({ persist = true })
+  history.load_all()
+  history.trim_all({ persist = true })
   rebuild_ignored_project_map()
   ensure_highlight()
   attach_autocmds()
   if config.keymap and config.keymap ~= "" then
     vim.keymap.set("n", config.keymap, function()
       M.open_issue_under_cursor()
-    end, { desc = "jira.nvim: open issue details" })
+    end, { silent = true, desc = "jira.nvim: open issue details" })
   end
   local assigned_keymap = config.assigned_popup and config.assigned_popup.keymap
   if assigned_keymap and assigned_keymap ~= "" then
     vim.keymap.set("n", assigned_keymap, function()
       M.open_assigned_issues()
-    end, { desc = "jira.nvim: list assigned issues" })
+    end, { silent = true, desc = "jira.nvim: list assigned issues" })
   end
   local search_keymap = config.search_popup and config.search_popup.keymap
   if search_keymap and search_keymap ~= "" then
     vim.keymap.set("n", search_keymap, function()
       M.open_jql_search()
-    end, { desc = "jira.nvim: search Jira via JQL" })
+    end, { silent = true, desc = "jira.nvim: search Jira via JQL" })
   end
   local filter_keymap = config.filter_popup and config.filter_popup.keymap
   if filter_keymap and filter_keymap ~= "" then
     vim.keymap.set("n", filter_keymap, function()
       M.open_filter_search()
-    end, { desc = "jira.nvim: search Jira via filter" })
+    end, { silent = true, desc = "jira.nvim: search Jira via filter" })
   end
   local filter_list_keymap = config.filter_list_popup and config.filter_list_popup.keymap
   if filter_list_keymap and filter_list_keymap ~= "" then
     vim.keymap.set("n", filter_list_keymap, function()
       M.open_filter_list()
-    end, { desc = "jira.nvim: list saved Jira filters" })
+    end, { silent = true, desc = "jira.nvim: list saved Jira filters" })
   end
   local created_keymap = config.created_popup and config.created_popup.keymap
   if created_keymap and created_keymap ~= "" then
     vim.keymap.set("n", created_keymap, function()
       M.open_created_issues()
-    end, { desc = "jira.nvim: list issues created by me" })
+    end, { silent = true, desc = "jira.nvim: list issues created by me" })
   end
   local recent_keymap = config.recent_popup and config.recent_popup.keymap
   if recent_keymap and recent_keymap ~= "" then
     vim.keymap.set("n", recent_keymap, function()
       M.open_recent_issues()
-    end, { desc = "jira.nvim: list recently viewed issues" })
+    end, { silent = true, desc = "jira.nvim: list recently viewed issues" })
   end
   local buffer_keymap = config.buffer_popup and config.buffer_popup.keymap
   if buffer_keymap and buffer_keymap ~= "" then
     vim.keymap.set("n", buffer_keymap, function()
       M.open_buffer_issue_list()
-    end, { desc = "jira.nvim: list buffer issues" })
+    end, { silent = true, desc = "jira.nvim: list buffer issues" })
   end
   local history_keymap = config.history_popup and config.history_popup.keymap
   if history_keymap and history_keymap ~= "" then
     vim.keymap.set("n", history_keymap, function()
       M.open_issue_history()
-    end, { desc = "jira.nvim: open viewed issue history" })
+    end, { silent = true, desc = "jira.nvim: open viewed issue history" })
   end
   if statusline_updates_enabled() then
     if statusline_template_enabled() then
@@ -1510,13 +1077,14 @@ function M.open_issue(issue_key, opts)
   else
     navigation_state = nil
   end
+  vim.notify(string.format("jira.nvim: loading %s…", issue_key), vim.log.levels.INFO)
   api.fetch_issue(issue_key, config, function(issue, err)
     vim.schedule(function()
       if err then
         vim.notify(string.format("jira.nvim: %s", err), vim.log.levels.ERROR)
         return
       end
-      record_issue_history(issue)
+      history.record_issue(issue)
       local nav_context = nil
       if navigation_state then
         local idx = issue_index(navigation_state.issues, issue.key)
@@ -1679,7 +1247,9 @@ local function render_assigned_page(start_at)
       }
       local has_prev = start_idx > 0
       local has_next = (#issues == page_size) and ((not result.total) or (start_idx + #issues < result.total))
-      local handlers = {}
+      local handlers = {
+        reload = function() render_assigned_page(0) end,
+      }
       if has_next then
         handlers.next_page = function()
           render_assigned_page(start_idx + page_size)
@@ -1733,7 +1303,9 @@ local function render_jql_list_page(title, jql, layout, start_at)
       }
       local has_prev = start_idx > 0
       local has_next = (#issues == page_size) and ((not result.total) or (start_idx + #issues < result.total))
-      local handlers = {}
+      local handlers = {
+        reload = function() render_jql_list_page(title, jql, layout, 0) end,
+      }
       if has_next then
         handlers.next_page = function()
           render_jql_list_page(title, jql, layout, start_idx + page_size)
@@ -1800,7 +1372,9 @@ local function render_jql_page(jql, opts)
         page = page_number,
         total_pages = total_pages or page_number,
       }
-      local handlers = {}
+      local handlers = {
+        reload = function() render_jql_page(jql, { page = 1, page_state = {} }) end,
+      }
       local next_token = result.next_page_token
       if next_token and next_token ~= "" then
         handlers.next_page = function()
@@ -1878,7 +1452,9 @@ local function render_filter_page(filter, start_at)
       }
       local has_prev = start_idx > 0
       local has_next = (#issues == page_size) and ((not result.total) or (start_idx + #issues < result.total))
-      local handlers = {}
+      local handlers = {
+        reload = function() render_filter_page(filter, 0) end,
+      }
       if has_next then
         handlers.next_page = function()
           render_filter_page(filter, start_idx + page_size)
@@ -1938,7 +1514,7 @@ local function run_filter_by_id(filter_id, opts)
         end
         return
       end
-      record_filter_history(filter)
+      history.record_filter(filter)
       render_filter_page(filter, 0)
       if opts.on_success then
         opts.on_success(filter)
@@ -1980,10 +1556,10 @@ function M.open_jql_search()
       return
     end
     last_jql_query = input or query
-    record_search_history(input or query)
+    history.record_search(input or query)
     render_jql_page(query)
   end
-  local history_snapshot = deepcopy(search_history)
+  local history_snapshot = deepcopy(history.get_search())
   local prompt_state = jql_prompt.open({
     default = default_query,
     help = help,
@@ -2021,7 +1597,7 @@ function M.open_filter_search(opts)
   local default_value = opts.default or last_filter_query or ""
   local help = "Enter Jira filter ID (number). Example: 12345"
   local history_entries = {}
-  for _, entry in ipairs(filter_history) do
+  for _, entry in ipairs(history.get_filter()) do
     if entry and entry.id then
       local label = tostring(entry.id)
       if entry.name and entry.name ~= "" then
@@ -2205,6 +1781,7 @@ end
 ---Open a popup listing previously viewed issues from history.
 ---@return nil
 function M.open_issue_history()
+  local issue_history = history.get_issue()
   local issues = {}
   for idx = #issue_history, 1, -1 do
     table.insert(issues, issue_history[idx])

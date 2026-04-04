@@ -732,22 +732,7 @@ local function add_buffer_highlight(buf, group, line, start_col, end_col)
 end
 
 ---Check if an issue key belongs to an ignored project list.
----@param issue_key string|nil Issue key.
----@param ignored_projects table|nil Map of ignored project keys.
----@return boolean ignore True when the key should be skipped.
-local function should_ignore_issue_key(issue_key, ignored_projects)
-  if not issue_key or issue_key == "" then
-    return false
-  end
-  if not ignored_projects then
-    return false
-  end
-  local project = issue_key:match("^([%a%d]+)%-%d+$")
-  if not project then
-    return false
-  end
-  return ignored_projects[project:upper()] == true
-end
+-- should_ignore_issue_key is utils.should_ignore_issue_key
 
 ---Highlight issue keys within rendered lines.
 ---@param buf number Buffer handle.
@@ -768,7 +753,7 @@ local function add_issue_key_highlights(buf, lines, pattern, ignored_projects)
         break
       end
       local issue_key = line:sub(s, e)
-      if not should_ignore_issue_key(issue_key, ignored_projects) then
+      if not utils.should_ignore_issue_key(issue_key, ignored_projects) then
         add_buffer_highlight(buf, "JiraPopupKey", idx - 1, s - 1, e)
       end
       start = e + 1
@@ -927,7 +912,7 @@ local function find_issue_key_under_cursor(buf, pattern, ignored_projects, curso
       break
     end
     local key = line:sub(s, e)
-    if not should_ignore_issue_key(key, ignored_projects) then
+    if not utils.should_ignore_issue_key(key, ignored_projects) then
       if not first_match then
         first_match = key
       end
@@ -1116,6 +1101,7 @@ local list_state = {
   pagination = nil,
   page_handlers = nil,
   close_on_select = false,
+  allow_select_without_key = false,
   title = nil,
   source = nil,
   search_active = false,
@@ -1182,35 +1168,35 @@ local function close_issue_list()
   wipe_buffer(list_state.buf)
   wipe_buffer(list_state.container_buf)
   wipe_buffer(list_state.preview_buf)
-  list_state = {
-    win = nil,
-    buf = nil,
-    issues = {},
-    selection = nil,
-    data_offset = 0,
-    autocmd = nil,
-    on_select = nil,
-    pagination = nil,
-    page_handlers = nil,
-    close_on_select = false,
-    title = nil,
-    source = nil,
-    search_active = false,
-    selection_before_search = nil,
-    container_win = nil,
-    container_buf = nil,
-    bar_win = nil,
-    bar_buf = nil,
-    preview_win = nil,
-    preview_buf = nil,
-    preview_source_buf = nil,
-    preview_height = nil,
-    preview_mode = nil,
-    preview_cache = nil,
-    preview_request_key = nil,
-    preview_pending = false,
-    config = nil,
-  }
+  -- Clear in-place to avoid stale references in closures that captured list_state.
+  list_state.win = nil
+  list_state.buf = nil
+  list_state.issues = {}
+  list_state.selection = nil
+  list_state.data_offset = 0
+  list_state.autocmd = nil
+  list_state.on_select = nil
+  list_state.pagination = nil
+  list_state.page_handlers = nil
+  list_state.close_on_select = false
+  list_state.allow_select_without_key = false
+  list_state.title = nil
+  list_state.source = nil
+  list_state.search_active = false
+  list_state.selection_before_search = nil
+  list_state.container_win = nil
+  list_state.container_buf = nil
+  list_state.bar_win = nil
+  list_state.bar_buf = nil
+  list_state.preview_win = nil
+  list_state.preview_buf = nil
+  list_state.preview_source_buf = nil
+  list_state.preview_height = nil
+  list_state.preview_mode = nil
+  list_state.preview_cache = nil
+  list_state.preview_request_key = nil
+  list_state.preview_pending = false
+  list_state.config = nil
 end
 
 ---Center a preview window on a specific line.
@@ -3444,35 +3430,33 @@ function Popup.render_issue_list(issues, config, opts)
     vim.api.nvim_buf_add_highlight(buf, popup_ns, "JiraPopupListEmpty", layout.empty_line - 1, 0, -1)
   end
 
-  list_state = {
-    win = win,
-    buf = buf,
-    issues = issues,
-    selection = (#issues > 0) and 1 or nil,
-    data_offset = layout.data_offset,
-    autocmd = nil,
-    on_select = opts.on_select,
-    pagination = opts.pagination,
-    page_handlers = opts.pagination_handlers,
-    close_on_select = opts.close_on_select == true,
-    title = title,
-    source = opts.source,
-    search_active = false,
-    selection_before_search = nil,
-    container_win = container_win,
-    container_buf = container_buf,
-    bar_win = bar_win,
-    bar_buf = bar_buf,
-    preview_win = nil,
-    preview_buf = nil,
-    preview_source_buf = preview_source_buf,
-    preview_height = content_height,
-    preview_mode = preview_mode,
-    preview_cache = {},
-    preview_request_key = nil,
-    preview_pending = false,
-    config = config,
-  }
+  list_state.win = win
+  list_state.buf = buf
+  list_state.issues = issues
+  list_state.selection = (#issues > 0) and 1 or nil
+  list_state.data_offset = layout.data_offset
+  list_state.autocmd = nil
+  list_state.on_select = opts.on_select
+  list_state.pagination = opts.pagination
+  list_state.page_handlers = opts.pagination_handlers
+  list_state.close_on_select = opts.close_on_select == true
+  list_state.title = title
+  list_state.source = opts.source
+  list_state.search_active = false
+  list_state.selection_before_search = nil
+  list_state.container_win = container_win
+  list_state.container_buf = container_buf
+  list_state.bar_win = bar_win
+  list_state.bar_buf = bar_buf
+  list_state.preview_win = nil
+  list_state.preview_buf = nil
+  list_state.preview_source_buf = preview_source_buf
+  list_state.preview_height = content_height
+  list_state.preview_mode = preview_mode
+  list_state.preview_cache = {}
+  list_state.preview_request_key = nil
+  list_state.preview_pending = false
+  list_state.config = config
 
   if preview_source_buf or preview_mode == "issue" then
     local preview_buf = vim.api.nvim_create_buf(false, true)
@@ -3570,6 +3554,11 @@ function Popup.render_issue_list(issues, config, opts)
   local key_opts = { buffer = buf, nowait = true, silent = true }
   vim.keymap.set("n", "q", Popup.close_all, key_opts)
   vim.keymap.set("n", "<Esc>", Popup.close_all, key_opts)
+  vim.keymap.set("n", "r", function()
+    if list_state.page_handlers and list_state.page_handlers.reload then
+      list_state.page_handlers.reload()
+    end
+  end, key_opts)
   vim.keymap.set("n", "j", function()
     move_issue_list_selection(1)
   end, key_opts)
@@ -3720,36 +3709,34 @@ function Popup.render_filter_list(filters, config, opts)
     end
   end
 
-  list_state = {
-    win = win,
-    buf = buf,
-    issues = filters,
-    selection = (#filters > 0) and 1 or nil,
-    data_offset = layout.data_offset,
-    autocmd = nil,
-    on_select = opts.on_select,
-    pagination = opts.pagination,
-    page_handlers = opts.pagination_handlers,
-    close_on_select = opts.close_on_select == true,
-    allow_select_without_key = true,
-    title = title,
-    source = opts.source,
-    search_active = false,
-    selection_before_search = nil,
-    container_win = container_win,
-    container_buf = container_buf,
-    bar_win = bar_win,
-    bar_buf = bar_buf,
-    preview_win = nil,
-    preview_buf = nil,
-    preview_source_buf = nil,
-    preview_height = content_height,
-    preview_mode = nil,
-    preview_cache = {},
-    preview_request_key = nil,
-    preview_pending = false,
-    config = config,
-  }
+  list_state.win = win
+  list_state.buf = buf
+  list_state.issues = filters
+  list_state.selection = (#filters > 0) and 1 or nil
+  list_state.data_offset = layout.data_offset
+  list_state.autocmd = nil
+  list_state.on_select = opts.on_select
+  list_state.pagination = opts.pagination
+  list_state.page_handlers = opts.pagination_handlers
+  list_state.close_on_select = opts.close_on_select == true
+  list_state.allow_select_without_key = true
+  list_state.title = title
+  list_state.source = opts.source
+  list_state.search_active = false
+  list_state.selection_before_search = nil
+  list_state.container_win = container_win
+  list_state.container_buf = container_buf
+  list_state.bar_win = bar_win
+  list_state.bar_buf = bar_buf
+  list_state.preview_win = nil
+  list_state.preview_buf = nil
+  list_state.preview_source_buf = nil
+  list_state.preview_height = content_height
+  list_state.preview_mode = nil
+  list_state.preview_cache = {}
+  list_state.preview_request_key = nil
+  list_state.preview_pending = false
+  list_state.config = config
 
   if list_state.selection then
     refresh_issue_list_selection()
@@ -3806,6 +3793,11 @@ function Popup.render_filter_list(filters, config, opts)
   local key_opts = { buffer = buf, nowait = true, silent = true }
   vim.keymap.set("n", "q", Popup.close_all, key_opts)
   vim.keymap.set("n", "<Esc>", Popup.close_all, key_opts)
+  vim.keymap.set("n", "r", function()
+    if list_state.page_handlers and list_state.page_handlers.reload then
+      list_state.page_handlers.reload()
+    end
+  end, key_opts)
   vim.keymap.set("n", "j", function()
     move_issue_list_selection(1)
   end, key_opts)
