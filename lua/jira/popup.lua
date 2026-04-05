@@ -715,7 +715,7 @@ local function apply_statusline(win, status_text)
   if not win or not vim.api.nvim_win_is_valid(win) then
     return
   end
-  vim.api.nvim_set_option_value("statusline", build_statusline_text(status_text, { win = win }))
+  vim.api.nvim_set_option_value("statusline", build_statusline_text(status_text), { win = win })
 end
 
 local function add_buffer_highlight(buf, group, line, start_col, end_col)
