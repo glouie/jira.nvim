@@ -60,11 +60,7 @@ describe("extract_jira_error", function()
 
   it("joins multiple errorMessages with a semicolon", function()
     local body = '{"errorMessages":["First error","Second error"],"errors":{}}'
-    local result = test.extract_jira_error(body)
-    assert.is_not_nil(result)
-    assert.is_truthy(result:find("First error",  1, true))
-    assert.is_truthy(result:find("Second error", 1, true))
-    assert.is_truthy(result:find("; ",           1, true))
+    assert.equals("First error; Second error", test.extract_jira_error(body))
   end)
 
   it("parses a field-level errors object", function()
@@ -84,8 +80,11 @@ describe("extract_jira_error", function()
     local body = '{"errorMessages":["Top-level error"],"errors":{"priority":"Invalid priority"}}'
     local result = test.extract_jira_error(body)
     assert.is_not_nil(result)
-    assert.is_truthy(result:find("Top-level error",  1, true))
-    assert.is_truthy(result:find("priority",         1, true))
+    assert.is_truthy(result:find("Top-level error", 1, true))
+    assert.is_truthy(result:find("priority",        1, true))
+    -- Two items joined → exactly one "; " separator
+    local _, count = result:gsub("; ", "")
+    assert.equals(1, count)
   end)
 
   it("ignores empty string entries in errorMessages", function()
