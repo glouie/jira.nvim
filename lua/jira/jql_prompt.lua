@@ -542,8 +542,14 @@ local function move_history_selection(state, delta)
     next_idx = math.min(count, math.max(1, next_idx + delta))
   end
   state.history_selection = next_idx
-  render_history_sidebar(state)
-  return preview_history_selection(state)
+  -- Defer buffer writes: nvim_buf_set_lines is forbidden inside expr keymap
+  -- callbacks (textlock active during expr evaluation). Schedule runs after
+  -- the keymap returns its value, outside the textlock.
+  vim.schedule(function()
+    render_history_sidebar(state)
+    preview_history_selection(state)
+  end)
+  return true
 end
 
 ---Close the prompt windows and cleanup timers/autocmds.
