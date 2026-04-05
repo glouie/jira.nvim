@@ -1171,4 +1171,9 @@ function M.fetch_jql_suggestions(config, opts, callback)
   end)
 end
 
+-- Exposed for unit testing only. Not part of the public API.
+M._test = {
+  extract_jira_error = extract_jira_error,
+}
+
 return M
