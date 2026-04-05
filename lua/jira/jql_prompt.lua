@@ -460,13 +460,14 @@ local function cancel_history_preview(state)
     state.previewing_history = false
     return false
   end
-  set_prompt_text(
-    state,
-    state.history_preview,
-    { suppress_change = true, move_cursor = true }
-  )
+  local saved = state.history_preview
   state.previewing_history = false
   state.history_preview = nil
+  -- Defer buffer write: set_prompt_text calls nvim_buf_set_lines which is
+  -- forbidden inside expr keymap callbacks (textlock).
+  vim.schedule(function()
+    set_prompt_text(state, saved, { suppress_change = true, move_cursor = true })
+  end)
   return true
 end
 
@@ -487,7 +488,12 @@ local function apply_history_selection(state)
   end
   state.history_preview = nil
   state.previewing_history = false
-  set_prompt_text(state, entry, { move_cursor = true })
+  -- Defer buffer write: set_prompt_text calls nvim_buf_set_lines which is
+  -- forbidden inside expr keymap callbacks (textlock). State is updated
+  -- synchronously above so the expr return value ("" vs "<CR>") is correct.
+  vim.schedule(function()
+    set_prompt_text(state, entry, { move_cursor = true })
+  end)
   return true
 end
 
@@ -1414,5 +1420,11 @@ function JQLPrompt.close(state)
   end
   close_prompt(state)
 end
+
+JQLPrompt._test = {
+  cancel_history_preview  = cancel_history_preview,
+  apply_history_selection = apply_history_selection,
+  move_history_selection  = move_history_selection,
+}
 
 return JQLPrompt

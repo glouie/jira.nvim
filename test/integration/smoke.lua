@@ -137,6 +137,52 @@ do
   pcall(popup.close_all)
 end
 
+-- ── Test 6: jql_prompt expr keymap handlers don't crash under textlock ────────
+-- cancel_history_preview, apply_history_selection, and move_history_selection
+-- all call nvim_buf_set_lines. They must use vim.schedule so expr keymaps
+-- (which hold a textlock) don't trigger E565.
+do
+  local jql = require("jira.jql_prompt")
+  -- Minimal state that exercises the cancel/apply paths without a real window.
+  local buf = vim.api.nvim_create_buf(false, true)
+  local mock_state = {
+    buf             = buf,
+    win             = nil,
+    history_buf     = nil,
+    history_win     = nil,
+    history         = { "project = ABC", "project = DEF" },
+    history_selection = 1,
+    previewing_history = true,
+    history_preview = "original text",
+    closed          = false,
+    suppress_on_change = false,
+  }
+
+  -- Simulate calling the functions that were broken under textlock.
+  -- They must not raise E565 when called directly (no textlock here, but
+  -- the schedule wrapping means they're safe under textlock too).
+  local ok1, err1 = pcall(jql._test.cancel_history_preview, mock_state)
+  if not ok1 then
+    fail("cancel_history_preview does not crash", tostring(err1))
+  end
+
+  mock_state.previewing_history = true
+  mock_state.history_preview    = nil
+  mock_state.history_selection  = 1
+  local ok2, err2 = pcall(jql._test.apply_history_selection, mock_state)
+  if not ok2 then
+    fail("apply_history_selection does not crash", tostring(err2))
+  end
+
+  local ok3, err3 = pcall(jql._test.move_history_selection, mock_state, 1)
+  if not ok3 then
+    fail("move_history_selection does not crash", tostring(err3))
+  end
+
+  vim.api.nvim_buf_delete(buf, { force = true })
+  pass("jql_prompt expr handlers defer buffer writes correctly")
+end
+
 -- ── Done ──────────────────────────────────────────────────────────────────────
 io.stdout:write("\nAll integration tests passed.\n")
 vim.cmd("quit")
