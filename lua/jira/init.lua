@@ -549,7 +549,7 @@ function M.setup(opts)
   local api_opts = opts.api or {}
   config.api = {
     base_url = api_opts.base_url or vim.env.JIRA_BASE_URL or "",
-    email    = api_opts.email    or vim.env.JIRA_API_EMAIL  or "",
+    email    = api_opts.email    or vim.env.JIRA_EMAIL or vim.env.JIRA_API_EMAIL or "",
     token    = api_opts.token    or vim.env.JIRA_API_TOKEN  or vim.env.JIRA_API_KEY or "",
   }
   api.set_debug(config.debug)

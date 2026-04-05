@@ -108,6 +108,42 @@ local function format_args_for_log(args)
   return table.concat(parts, " ")
 end
 
+---Extract Jira's own error text from a response body, if present.
+---Jira returns {"errorMessages":["..."],"errors":{...}} on 4xx failures.
+---@param body string Raw response body from curl.
+---@return string|nil err Human-readable error or nil when body is not a Jira error.
+local function extract_jira_error(body)
+  if not body or body == "" then
+    return nil
+  end
+  local ok, decoded = pcall(vim.json.decode, body)
+  if not ok or type(decoded) ~= "table" then
+    return nil
+  end
+  local messages = {}
+  if type(decoded.errorMessages) == "table" then
+    for _, msg in ipairs(decoded.errorMessages) do
+      if type(msg) == "string" and msg ~= "" then
+        table.insert(messages, msg)
+      end
+    end
+  end
+  if type(decoded.errors) == "table" then
+    for field, msg in pairs(decoded.errors) do
+      if type(msg) == "string" and msg ~= "" then
+        table.insert(messages, string.format("%s: %s", field, msg))
+      end
+    end
+  end
+  if type(decoded.message) == "string" and decoded.message ~= "" then
+    table.insert(messages, decoded.message)
+  end
+  if #messages > 0 then
+    return table.concat(messages, "; ")
+  end
+  return nil
+end
+
 ---Run a curl command asynchronously and capture output.
 ---@param args string[] Curl argument list.
 ---@param callback fun(stdout:string|nil, err:string|nil) Invoked with stdout or error string.
@@ -205,14 +241,14 @@ local function resolve_credentials(api_config, callback)
     return nil, nil
   end
   local auth, auth_err = utils.encode_basic_auth(
-    api_config.email or vim.env.JIRA_API_EMAIL,
+    api_config.email or vim.env.JIRA_EMAIL or vim.env.JIRA_API_EMAIL,
     api_config.token or vim.env.JIRA_API_TOKEN or vim.env.JIRA_API_KEY
   )
   if not auth then
     callback(
       nil,
       string.format(
-        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
+        "Jira credentials are incomplete: %s. Provide config.api.email/token or the JIRA_EMAIL/JIRA_API_EMAIL/JIRA_API_TOKEN variables.",
         auth_err
       )
     )
@@ -248,42 +284,6 @@ local function build_request_args(method, endpoint, auth_header, body)
   end
   table.insert(args, endpoint)
   return args
-end
-
----Extract Jira's own error text from a response body, if present.
----Jira returns {"errorMessages":["..."],"errors":{...}} on 4xx failures.
----@param body string Raw response body from curl.
----@return string|nil err Human-readable error or nil when body is not a Jira error.
-local function extract_jira_error(body)
-  if not body or body == "" then
-    return nil
-  end
-  local ok, decoded = pcall(vim.json.decode, body)
-  if not ok or type(decoded) ~= "table" then
-    return nil
-  end
-  local messages = {}
-  if type(decoded.errorMessages) == "table" then
-    for _, msg in ipairs(decoded.errorMessages) do
-      if type(msg) == "string" and msg ~= "" then
-        table.insert(messages, msg)
-      end
-    end
-  end
-  if type(decoded.errors) == "table" then
-    for field, msg in pairs(decoded.errors) do
-      if type(msg) == "string" and msg ~= "" then
-        table.insert(messages, string.format("%s: %s", field, msg))
-      end
-    end
-  end
-  if type(decoded.message) == "string" and decoded.message ~= "" then
-    table.insert(messages, decoded.message)
-  end
-  if #messages > 0 then
-    return table.concat(messages, "; ")
-  end
-  return nil
 end
 
 ---Build curl arguments for a GET request.
